@@ -24,10 +24,14 @@ vendor/
 *.swo
 *~
 
-# Environment files
+# Environment files (NEVER commit real credentials)
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
+.env.production
+# Note: .env.example is intentionally NOT ignored - it's the template
 
 # Logs
 *.log
@@ -40,4 +44,3 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
-/.env.example
