@@ -5,9 +5,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
+
+	"github.com/emalify/emalify-sms-mno-gateway/internal/bootstrap"
+	"github.com/emalify/emalify-sms-mno-gateway/internal/config"
 )
 
 func main() {
@@ -16,7 +20,7 @@ func main() {
 		logrus.Warn("No .env file found, using environment variables")
 	}
 
-	// Initialize logger
+	// Initialize early logger for startup
 	log := logrus.New()
 	log.SetFormatter(&logrus.JSONFormatter{})
 
@@ -32,42 +36,45 @@ func main() {
 
 	log.Info("Starting emalify-sms-mno-gateway...")
 
+	// Load configuration
+	cfg := config.Load()
+
+	// Create and initialize the application
+	app, err := bootstrap.New(cfg)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to initialize application")
+	}
+
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// TODO: Initialize components
-	// 1. Config
-	// 2. Redis client
-	// 3. RabbitMQ connection
-	// 4. HTTP client (pooled)
-	// 5. Metrics
-	// 6. Rate limiter
-	// 7. Circuit breakers
-	// 8. MNO sender factory
-	// 9. Router
-	// 10. Result handler
-	// 11. Processor
-	// 12. HTTP server
-	// 13. Start consumers
-	// 14. Start HTTP server
+	// Start the application (consumers and HTTP server)
+	if err := app.Start(ctx); err != nil {
+		log.WithError(err).Fatal("Failed to start application")
+	}
+
+	log.Info("Application started successfully")
 
 	// Handle shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	select {
-	case sig := <-sigChan:
-		log.WithField("signal", sig.String()).Info("Received shutdown signal")
-		cancel()
-	case <-ctx.Done():
-		log.Info("Context cancelled")
-	}
+	// Wait for shutdown signal
+	sig := <-sigChan
+	log.WithField("signal", sig.String()).Info("Received shutdown signal, initiating graceful shutdown...")
 
-	// TODO: Graceful shutdown
-	// 1. Stop accepting new messages
-	// 2. Wait for in-flight workers (30s timeout)
-	// 3. Close connections
+	// Cancel context to signal all goroutines to stop
+	cancel()
+
+	// Create shutdown context with timeout
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	// Graceful shutdown
+	if err := app.Shutdown(shutdownCtx); err != nil {
+		log.WithError(err).Error("Error during shutdown")
+	}
 
 	log.Info("Shutdown complete")
 }
