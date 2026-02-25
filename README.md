@@ -6,7 +6,7 @@ A unified SMS gateway service that routes messages to Mobile Network Operators (
 
 This service consolidates two legacy services (`ApiGateway` and `sendtomnohandler`) into a single, well-architected gateway that:
 
-- Consumes SMS messages from RabbitMQ queues
+- Consumes SMS messages from configurable RabbitMQ queues
 - Routes messages to the appropriate MNO based on network and message type
 - Handles retries, circuit breaking, and rate limiting
 - Publishes results to downstream queues for persistence
@@ -16,6 +16,7 @@ graph LR
     subgraph Input
         Q1[TITANIC-KE_SMS_QUEUE]
         Q2[CONSUME_TO_MNO]
+        Q3[SMS_MNO_GATEWAY_QUEUE]
     end
 
     subgraph Gateway
@@ -38,6 +39,7 @@ graph LR
 
     Q1 --> GW
     Q2 --> GW
+    Q3 --> GW
     GW --> SAF
     GW --> AIR
     GW --> TEL
