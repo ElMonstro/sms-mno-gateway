@@ -10,17 +10,18 @@
 graph TB
     subgraph "Upstream Services"
         RQH[requesttoqueuehandler<br/>HTTP API :9090]
-        BQH[batchingquehandler]
+        BQH[batchingquehandler<br/>Blue-Green Router]
         OTHER[Other Systems]
     end
 
-    subgraph "Message Queues"
-        TQ[TITANIC-KE_SMS_QUEUE]
-        CMQ[CONSUME_TO_MNO]
+    subgraph "Input Queues"
+        TQ[TITANIC-KE_SMS_QUEUE<br/>Direct traffic]
+        CMQ[CONSUME_TO_MNO<br/>Blue lane - legacy]
+        GQ[SMS_MNO_GATEWAY_QUEUE<br/>Green lane - new]
     end
 
     subgraph "emalify-sms-mno-gateway"
-        CONSUMER[Queue Consumer]
+        CONSUMER[Queue Consumer<br/>One per input queue]
         PROCESSOR[Message Processor]
         ROUTER[Message Router]
 
@@ -54,9 +55,9 @@ graph TB
     end
 
     RQH --> TQ
-    BQH --> CMQ
+    BQH -->|Blue| CMQ
+    BQH -->|Green| GQ
     OTHER --> TQ
-    OTHER --> CMQ
 
     TQ --> CONSUMER
     CMQ --> CONSUMER

@@ -17,31 +17,42 @@ The SMS MNO Gateway is responsible for:
 
 ### Input Queues
 
-The service consumes from two input queues:
+The service can consume from multiple input queues, configured via a comma-separated list in `INPUT_QUEUES`:
 
 ```mermaid
 graph LR
     subgraph "Input Sources"
         A[requesttoqueuehandler<br/>HTTP API]
         B[batchingquehandler<br/>Batch processor]
-        C[Other systems]
+        C[emalify-api-v2<br/>PHP API]
     end
 
     subgraph "Input Queues"
         TQ[TITANIC-KE_SMS_QUEUE<br/>Direct traffic]
         CMQ[CONSUME_TO_MNO<br/>Batched Gold partner traffic]
+        GQ[SMS_MNO_GATEWAY_QUEUE<br/>Blue-green test traffic]
     end
 
     A --> TQ
     B --> CMQ
+    B -->|Green lane| GQ
     C --> TQ
-    C --> CMQ
 ```
 
-| Queue | Environment Variable | Default Value | Source |
-|-------|---------------------|---------------|--------|
-| Direct SMS Queue | `TITANIC_KE_SMS_QUEUE` | `TITANIC-KE_SMS_QUEUE` | requesttoqueuehandler, other systems |
-| Batched MNO Queue | `CONSUME_TO_MNO_QUEUE` | `CONSUME_TO_MNO` | batchingquehandler |
+**Configuration:**
+
+```env
+# Comma-separated list of queues to consume from
+INPUT_QUEUES=TITANIC-KE_SMS_QUEUE,CONSUME_TO_MNO,SMS_MNO_GATEWAY_QUEUE
+```
+
+| Queue | Purpose | Source |
+|-------|---------|--------|
+| `TITANIC-KE_SMS_QUEUE` | Direct/standard traffic | requesttoqueuehandler, emalify-api-v2 |
+| `CONSUME_TO_MNO` | Batched Gold partner traffic | batchingquehandler (Blue lane) |
+| `SMS_MNO_GATEWAY_QUEUE` | Blue-green deployment testing | batchingquehandler (Green lane) |
+
+The service creates a separate consumer for each queue, all feeding into the same processing pipeline.
 
 ### Output Queues
 
