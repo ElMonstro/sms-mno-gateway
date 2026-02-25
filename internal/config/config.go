@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,9 +50,8 @@ type RabbitMQConfig struct {
 
 // QueuesConfig holds queue names configuration
 type QueuesConfig struct {
-	// Input queues
-	TitanicKESMSQueue string
-	ConsumeToMNOQueue string
+	// Input queues (comma-separated list from env)
+	InputQueues []string
 
 	// Output queues
 	SaveToDBQueue   string
@@ -125,11 +125,10 @@ func Load() *Config {
 			ReconnectWait: getEnvAsDuration("RABBITMQ_RECONNECT_WAIT", 5*time.Second),
 		},
 		Queues: QueuesConfig{
-			TitanicKESMSQueue: getEnv("TITANIC_KE_SMS_QUEUE", "TITANIC-KE_SMS_QUEUE"),
-			ConsumeToMNOQueue: getEnv("CONSUME_TO_MNO_QUEUE", "CONSUME_TO_MNO"),
-			SaveToDBQueue:     getEnv("SAVE_TO_DB_QUEUE", "SAVE_TO_DB"),
-			RetryQueue:        getEnv("SMS_RETRY_QUEUE", "SMS_RETRY_QUEUE"),
-			DeadLetterQueue:   getEnv("SMS_DEAD_LETTER_QUEUE", "SMS_DEAD_LETTER_QUEUE"),
+			InputQueues:     getEnvAsStringSlice("INPUT_QUEUES", []string{"TITANIC-KE_SMS_QUEUE", "CONSUME_TO_MNO"}),
+			SaveToDBQueue:   getEnv("SAVE_TO_DB_QUEUE", "SAVE_TO_DB"),
+			RetryQueue:      getEnv("SMS_RETRY_QUEUE", "SMS_RETRY_QUEUE"),
+			DeadLetterQueue: getEnv("SMS_DEAD_LETTER_QUEUE", "SMS_DEAD_LETTER_QUEUE"),
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{
@@ -210,6 +209,23 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	if value, exists := os.LookupEnv(key); exists {
 		if duration, err := time.ParseDuration(value); err == nil {
 			return duration
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsStringSlice(key string, defaultValue []string) []string {
+	if value, exists := os.LookupEnv(key); exists && value != "" {
+		parts := strings.Split(value, ",")
+		result := make([]string, 0, len(parts))
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		if len(result) > 0 {
+			return result
 		}
 	}
 	return defaultValue
