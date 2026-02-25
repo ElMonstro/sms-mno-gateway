@@ -172,11 +172,7 @@ func New(cfg *config.Config) (*App, error) {
 	app.Logger.Infof("Message processor initialized with %d workers", cfg.App.WorkerCount)
 
 	// 13. Initialize consumers for input queues
-	inputQueues := []string{
-		cfg.Queues.TitanicKESMSQueue,
-		cfg.Queues.ConsumeToMNOQueue,
-	}
-	for _, queueName := range inputQueues {
+	for _, queueName := range cfg.Queues.InputQueues {
 		consumer, err := rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
 			Connection: app.RabbitConn,
 			QueueName:  queueName,
