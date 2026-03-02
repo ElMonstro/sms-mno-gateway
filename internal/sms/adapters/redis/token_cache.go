@@ -110,5 +110,10 @@ func (c *TokenCache) Ping(ctx context.Context) error {
 	return c.client.Ping(ctx).Err()
 }
 
+// Client returns the underlying Redis client for reuse by other components
+func (c *TokenCache) Client() *redis.Client {
+	return c.client
+}
+
 // Ensure TokenCache implements ports.TokenCache
 var _ ports.TokenCache = (*TokenCache)(nil)
