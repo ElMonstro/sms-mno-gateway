@@ -279,6 +279,13 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to marshal auth request: %w", err)
 	}
 
+	s.log.WithFields(map[string]interface{}{
+		"url":              s.authURL,
+		"username":         s.username,
+		"password_set":     s.password != "",
+		"payload":          string(payload),
+	}).Debug("SDP auth request details")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.authURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("failed to create auth request: %w", err)
@@ -286,6 +293,11 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+	s.log.WithFields(map[string]interface{}{
+		"Content-Type":     req.Header.Get("Content-Type"),
+		"X-Requested-With": req.Header.Get("X-Requested-With"),
+	}).Debug("SDP auth request headers")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
