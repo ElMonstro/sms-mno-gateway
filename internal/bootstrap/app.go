@@ -38,6 +38,12 @@ type App struct {
 	ResultHandler   *service.ResultHandler
 	Processor       *service.Processor
 	HTTPServer      *api.Server
+
+	// Priority routing components (optional, enabled via PRIORITY_ENABLED)
+	PriorityStore        ports.PriorityStore
+	TransactionalHandler *service.TransactionalHandler
+	PriorityScheduler    *service.PriorityScheduler
+	MessageRouter        *service.MessageRouter
 }
 
 // New creates and initializes all application components
@@ -171,7 +177,56 @@ func New(cfg *config.Config) (*App, error) {
 	})
 	app.Logger.Infof("Message processor initialized with %d workers", cfg.App.WorkerCount)
 
-	// 13. Initialize consumers for input queues
+	// 13. Initialize priority routing (if enabled)
+	if cfg.Priority.Enabled {
+		app.Logger.Info("Priority routing enabled, initializing components...")
+
+		// Initialize priority store (Redis-backed)
+		app.PriorityStore, err = redis.NewPriorityStore(&redis.PriorityStoreConfig{
+			Client:         app.RedisCache.Client(),
+			WeightsKey:     cfg.Priority.RedisWeightsKey,
+			DefaultWeights: cfg.Priority.DefaultQueueWeights,
+			Logger:         app.Logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize priority store: %w", err)
+		}
+		app.Logger.Info("Priority store initialized")
+
+		// Initialize transactional handler (fast-path)
+		app.TransactionalHandler = service.NewTransactionalHandler(&service.TransactionalHandlerConfig{
+			Router:        app.Router,
+			ResultHandler: app.ResultHandler,
+			RateLimiter:   app.RateLimiter,
+			Metrics:       app.Metrics,
+			WorkerCount:   cfg.Priority.TransactionalWorkers,
+			Logger:        app.Logger,
+		})
+		app.Logger.Infof("Transactional handler initialized with %d workers", cfg.Priority.TransactionalWorkers)
+
+		// Initialize priority scheduler (WFQ for promotional)
+		app.PriorityScheduler = service.NewPriorityScheduler(&service.PrioritySchedulerConfig{
+			PriorityStore:             app.PriorityStore,
+			Processor:                 app.Processor,
+			Metrics:                   app.Metrics,
+			DefaultWeight:             cfg.Priority.DefaultWeight,
+			StarvationPreventionRatio: cfg.Priority.StarvationPreventionRatio,
+			Logger:                    app.Logger,
+		})
+		app.Logger.Info("Priority scheduler initialized")
+
+		// Initialize message router
+		app.MessageRouter = service.NewMessageRouter(&service.MessageRouterConfig{
+			TransactionalHandler: app.TransactionalHandler,
+			Scheduler:            app.PriorityScheduler,
+			Processor:            app.Processor,
+			Metrics:              app.Metrics,
+			Logger:               app.Logger,
+		})
+		app.Logger.Info("Message router initialized")
+	}
+
+	// 14. Initialize consumers for input queues
 	for _, queueName := range cfg.Queues.InputQueues {
 		consumer, err := rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
 			Connection: app.RabbitConn,
@@ -204,6 +259,19 @@ func New(cfg *config.Config) (*App, error) {
 
 // Start starts all consumers and the HTTP server
 func (app *App) Start(ctx context.Context) error {
+	// Start priority components if enabled
+	if app.Config.Priority.Enabled {
+		app.Logger.Info("Starting priority routing components...")
+
+		// Start transactional handler workers
+		app.TransactionalHandler.Start()
+
+		// Start priority scheduler (includes weight watcher)
+		if err := app.PriorityScheduler.Start(); err != nil {
+			return fmt.Errorf("failed to start priority scheduler: %w", err)
+		}
+	}
+
 	// Start consuming from all queues
 	for _, consumer := range app.Consumers {
 		deliveries, err := consumer.Consume(ctx)
@@ -211,16 +279,37 @@ func (app *App) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to start consumer for %s: %w", consumer.QueueName(), err)
 		}
 
+		queueName := consumer.QueueName()
+
+		// Register queue with scheduler if priority is enabled
+		if app.Config.Priority.Enabled && app.PriorityScheduler != nil {
+			app.PriorityScheduler.RegisterQueue(queueName, deliveries)
+		}
+
 		// Process deliveries in a goroutine
-		go func(queueName string, deliveries <-chan ports.Delivery) {
-			app.Logger.Infof("Started processing messages from queue: %s", queueName)
-			for delivery := range deliveries {
-				if err := app.Processor.ProcessDelivery(ctx, delivery); err != nil {
-					app.Logger.WithError(err).Error("Failed to process delivery")
+		if app.Config.Priority.Enabled && app.MessageRouter != nil {
+			// Priority routing enabled - use MessageRouter
+			go func(queueName string, deliveries <-chan ports.Delivery) {
+				app.Logger.Infof("Started processing messages from queue: %s (with priority routing)", queueName)
+				for delivery := range deliveries {
+					if err := app.MessageRouter.RouteDelivery(ctx, delivery, queueName); err != nil {
+						app.Logger.WithError(err).Error("Failed to route delivery")
+					}
 				}
-			}
-			app.Logger.Infof("Stopped processing messages from queue: %s", queueName)
-		}(consumer.QueueName(), deliveries)
+				app.Logger.Infof("Stopped processing messages from queue: %s", queueName)
+			}(queueName, deliveries)
+		} else {
+			// Standard processing - use Processor directly
+			go func(queueName string, deliveries <-chan ports.Delivery) {
+				app.Logger.Infof("Started processing messages from queue: %s", queueName)
+				for delivery := range deliveries {
+					if err := app.Processor.ProcessDelivery(ctx, delivery); err != nil {
+						app.Logger.WithError(err).Error("Failed to process delivery")
+					}
+				}
+				app.Logger.Infof("Stopped processing messages from queue: %s", queueName)
+			}(queueName, deliveries)
+		}
 	}
 
 	// Start HTTP server in a goroutine
@@ -244,6 +333,16 @@ func (app *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Stop priority components first (before closing consumers)
+	if app.TransactionalHandler != nil {
+		app.TransactionalHandler.Stop()
+		app.Logger.Info("Transactional handler stopped")
+	}
+	if app.PriorityScheduler != nil {
+		app.PriorityScheduler.Stop()
+		app.Logger.Info("Priority scheduler stopped")
+	}
+
 	// Close consumers
 	for _, consumer := range app.Consumers {
 		if err := consumer.Close(); err != nil {
@@ -262,6 +361,13 @@ func (app *App) Shutdown(ctx context.Context) error {
 	if app.RabbitConn != nil {
 		if err := app.RabbitConn.Close(); err != nil {
 			app.Logger.WithError(err).Warn("Error closing RabbitMQ connection")
+		}
+	}
+
+	// Close priority store (before Redis since it may use the shared client)
+	if app.PriorityStore != nil {
+		if err := app.PriorityStore.Close(); err != nil {
+			app.Logger.WithError(err).Warn("Error closing priority store")
 		}
 	}
 
