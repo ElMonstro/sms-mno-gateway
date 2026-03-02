@@ -187,15 +187,21 @@ emalify-sms-mno-gateway/
 │       │   ├── mno_sender.go   # MNO sender interface
 │       │   ├── queue_*.go      # Queue interfaces
 │       │   ├── token_cache.go  # Token cache interface
+│       │   ├── priority_store.go # Priority weights interface (EM-155)
 │       │   └── metrics.go      # Metrics interface
 │       ├── service/            # Application services
 │       │   ├── processor.go    # Message processor
-│       │   ├── router.go       # Message router
-│       │   └── result_handler.go
+│       │   ├── router.go       # MNO message router
+│       │   ├── result_handler.go
+│       │   ├── message_router.go      # Priority message router (EM-155)
+│       │   ├── priority_scheduler.go  # WFQ scheduler (EM-155)
+│       │   └── transactional_handler.go # Fast-path handler (EM-155)
 │       ├── adapters/           # Adapter implementations
 │       │   ├── mno/            # MNO adapters
 │       │   ├── rabbitmq/       # RabbitMQ adapters
 │       │   └── redis/          # Redis adapters
+│       │       ├── token_cache.go    # Token caching
+│       │       └── priority_store.go # Priority weights (EM-155)
 │       └── mocks/              # Test mocks
 ├── docs/                       # Documentation
 └── tests/                      # Test files
@@ -257,6 +263,86 @@ sequenceDiagram
     P->>C: Processing complete
     C->>Q: Acknowledge delivery
 ```
+
+## Priority Routing (EM-155)
+
+When `PRIORITY_ENABLED=true`, messages are routed through a priority system that separates transactional and promotional traffic:
+
+```mermaid
+flowchart TD
+    START[Incoming Delivery] --> ROUTER[Message Router]
+
+    ROUTER --> SEPARATE{Separate by<br/>packageId}
+
+    SEPARATE -->|packageId=TRANSACTIONAL| TX_HANDLER[Transactional Handler<br/>Dedicated Workers]
+    SEPARATE -->|Other| SCHEDULER[Priority Scheduler<br/>Weighted Fair Queuing]
+
+    subgraph "Fast Path"
+        TX_HANDLER --> TX_WORKERS[Worker Pool<br/>Default: 5 workers]
+        TX_WORKERS --> TX_SEND[Send Immediately]
+    end
+
+    subgraph "WFQ Scheduling"
+        SCHEDULER --> WFQ{Select Queue<br/>by Weight}
+        WFQ --> Q1[Queue 1<br/>Weight: 10]
+        WFQ --> Q2[Queue 2<br/>Weight: 5]
+        WFQ --> Q3[Queue 3<br/>Weight: 1]
+    end
+
+    TX_SEND --> RESULT[Result Handler]
+    Q1 --> RESULT
+    Q2 --> RESULT
+    Q3 --> RESULT
+
+    subgraph "Hot Reload"
+        REDIS[(Redis<br/>priority:weights)]
+        PUBSUB[Pub/Sub Notifications]
+        REDIS --> PUBSUB
+        PUBSUB --> SCHEDULER
+    end
+```
+
+### Key Components
+
+1. **MessageRouter** (`service/message_router.go`): Entry point that separates transactional from promotional messages
+2. **TransactionalHandler** (`service/transactional_handler.go`): Fast-path with dedicated workers for transactional messages
+3. **PriorityScheduler** (`service/priority_scheduler.go`): Weighted Fair Queuing for promotional messages
+4. **PriorityStore** (`adapters/redis/priority_store.go`): Redis-backed storage with hot-reload via Pub/Sub
+
+### Weighted Fair Queuing (WFQ)
+
+Higher weight queues get proportionally more processing slots:
+
+| Queue | Weight | Processing Share |
+|-------|--------|------------------|
+| TITANIC-KE_SMS_QUEUE | 10 | ~62.5% |
+| CONSUME_TO_MNO | 5 | ~31.25% |
+| SMS_MNO_GATEWAY_QUEUE | 1 | ~6.25% |
+
+**Starvation Prevention**: Low-priority queues are guaranteed minimum throughput (default 10%) to prevent complete starvation.
+
+### Hot-Reload Weights
+
+Queue weights can be updated at runtime without restart:
+
+```bash
+# Set weight via Redis CLI
+redis-cli HSET sms:priority:weights TITANIC-KE_SMS_QUEUE 20
+
+# Notify watchers
+redis-cli PUBLISH sms:priority:weights:notifications weights_updated
+```
+
+### Priority Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `priority_messages_routed_total` | Counter | type, queue | Messages routed by type |
+| `priority_transactional_processed_total` | Counter | status | Transactional messages processed |
+| `priority_transactional_queue_depth` | Gauge | - | Transactional queue depth |
+| `priority_scheduler_processed_total` | Counter | queue | Messages processed per queue |
+| `priority_scheduler_weight` | Gauge | queue | Current queue weights |
+| `priority_starvation_triggers_total` | Counter | queue | Starvation prevention triggers |
 
 ## Transactional Routing Flow
 
@@ -510,3 +596,4 @@ sequenceDiagram
 | EM-147 | No observability | Prometheus metrics implementation |
 | EM-148 | Cascading failures | Per-MNO circuit breakers |
 | EM-149 | Permanent failures retried | Proper DLQ routing for permanent failures |
+| EM-155 | No message prioritization | WFQ scheduler with transactional fast-path |

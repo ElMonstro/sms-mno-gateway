@@ -356,6 +356,126 @@ Each network has configured rate limits to prevent overwhelming MNO APIs:
 
 When rate limited, messages are marked as retryable and sent to the retry queue.
 
+## Priority Routing (EM-155)
+
+When enabled, the priority routing system separates transactional and promotional messages for optimal delivery:
+
+### Overview
+
+```mermaid
+flowchart LR
+    subgraph "Input"
+        MSG[Messages]
+    end
+
+    subgraph "Message Router"
+        CHECK{packageId?}
+    end
+
+    subgraph "Processing Paths"
+        TX[Transactional Handler<br/>Fast-Path]
+        WFQ[Priority Scheduler<br/>Weighted Fair Queuing]
+    end
+
+    MSG --> CHECK
+    CHECK -->|TRANSACTIONAL| TX
+    CHECK -->|Other| WFQ
+
+    TX --> MNO[MNO Senders]
+    WFQ --> MNO
+```
+
+### Enabling Priority Routing
+
+Set `PRIORITY_ENABLED=true` in your `.env` file:
+
+```env
+PRIORITY_ENABLED=true
+PRIORITY_REDIS_WEIGHTS_KEY=sms:priority:weights
+PRIORITY_DEFAULT_WEIGHT=1
+PRIORITY_STARVATION_RATIO=0.1
+PRIORITY_TRANSACTIONAL_WORKERS=5
+```
+
+### Configuring Queue Weights
+
+Higher weight queues receive proportionally more processing time:
+
+```env
+# Format: queue1:weight1,queue2:weight2,...
+PRIORITY_DEFAULT_QUEUE_WEIGHTS=TITANIC-KE_SMS_QUEUE:10,CONSUME_TO_MNO:5,SMS_MNO_GATEWAY_QUEUE:1
+```
+
+| Queue | Weight | Share |
+|-------|--------|-------|
+| TITANIC-KE_SMS_QUEUE | 10 | ~62.5% |
+| CONSUME_TO_MNO | 5 | ~31.25% |
+| SMS_MNO_GATEWAY_QUEUE | 1 | ~6.25% |
+
+### Hot-Reload Weights at Runtime
+
+Queue weights can be updated without restarting the service:
+
+```bash
+# Update a single queue weight
+redis-cli HSET sms:priority:weights TITANIC-KE_SMS_QUEUE 20
+
+# Update multiple weights
+redis-cli HMSET sms:priority:weights \
+    TITANIC-KE_SMS_QUEUE 20 \
+    CONSUME_TO_MNO 10 \
+    SMS_MNO_GATEWAY_QUEUE 2
+
+# Notify the service of changes
+redis-cli PUBLISH sms:priority:weights:notifications weights_updated
+
+# View current weights
+redis-cli HGETALL sms:priority:weights
+```
+
+### Transactional Fast-Path
+
+Messages with `packageId="TRANSACTIONAL"` bypass the WFQ scheduler entirely:
+
+- **Dedicated worker pool**: Configurable via `PRIORITY_TRANSACTIONAL_WORKERS` (default: 5)
+- **No queuing delays**: Processed immediately by available workers
+- **Separate from promotional**: Won't be delayed by promotional traffic
+
+### Starvation Prevention
+
+Low-priority queues are guaranteed minimum throughput:
+
+```env
+# Minimum 10% throughput for lowest priority queues
+PRIORITY_STARVATION_RATIO=0.1
+```
+
+If a queue hasn't been processed in `1/STARVATION_RATIO` seconds (10 seconds at 0.1), it gets immediate priority.
+
+### Priority Metrics
+
+Monitor priority routing via Prometheus:
+
+| Metric | Description |
+|--------|-------------|
+| `emalify_sms_priority_messages_routed_total{type,queue}` | Messages routed by type |
+| `emalify_sms_priority_transactional_processed_total{status}` | Transactional processing |
+| `emalify_sms_priority_transactional_queue_depth` | Transactional queue depth |
+| `emalify_sms_priority_scheduler_processed_total{queue}` | Scheduler processing per queue |
+| `emalify_sms_priority_scheduler_weight{queue}` | Current queue weights |
+| `emalify_sms_priority_starvation_triggers_total{queue}` | Starvation prevention triggers |
+
+### Priority Configuration Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PRIORITY_ENABLED` | false | Enable priority routing |
+| `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:weights | Redis hash key for weights |
+| `PRIORITY_DEFAULT_QUEUE_WEIGHTS` | (empty) | Initial queue weights |
+| `PRIORITY_DEFAULT_WEIGHT` | 1 | Weight for unconfigured queues |
+| `PRIORITY_STARVATION_RATIO` | 0.1 | Minimum throughput ratio |
+| `PRIORITY_TRANSACTIONAL_WORKERS` | 5 | Dedicated transactional workers |
+
 ## Retry Logic
 
 ### Retry Flow
@@ -541,3 +661,4 @@ This service replaces:
 5. **Circuit breakers**: Per-MNO failure isolation (EM-148 fix)
 6. **DLQ routing**: Permanent failures go to DLQ (EM-149 fix)
 7. **Metrics**: Prometheus observability (EM-147 fix)
+8. **Priority routing**: WFQ scheduler with transactional fast-path (EM-155)

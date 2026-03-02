@@ -54,6 +54,7 @@ graph LR
 
 - **Multi-MNO Support**: Safaricom (SDP + SMPP), Airtel, Telkom, Equitel, CM International
 - **Transactional Routing**: Automatic SMPP routing for Safaricom transactional messages
+- **Priority Routing**: Weighted Fair Queuing with transactional fast-path (EM-155)
 - **Resilience**: Per-MNO circuit breakers, rate limiting, retry logic
 - **Observability**: Prometheus metrics, structured logging, health endpoints
 - **Reliability**: Manual queue acknowledgment ensures no message loss
@@ -104,6 +105,7 @@ Key environment variables:
 | `REDIS_HOST` | `localhost` | Redis host |
 | `WORKER_COUNT` | `10` | Concurrent workers |
 | `LOG_LEVEL` | `info` | Log verbosity |
+| `PRIORITY_ENABLED` | `false` | Enable WFQ priority routing |
 
 See [docs/usage.md](docs/usage.md#configuration-reference) for complete configuration reference.
 
@@ -271,6 +273,8 @@ Key metrics exposed:
 - `sms_circuit_breaker_state{network}` - Circuit breaker status
 - `sms_retries_total{network}` - Retry counts
 - `sms_dead_letters_total{network}` - Dead letter counts
+- `sms_priority_messages_routed_total{type, queue}` - Priority routing counts
+- `sms_priority_scheduler_weight{queue}` - Current queue weights
 
 ### Health Checks
 
@@ -348,6 +352,7 @@ This service addresses several issues from the legacy systems:
 | EM-147 | No observability | Prometheus metrics |
 | EM-148 | Cascading MNO failures | Per-MNO circuit breakers |
 | EM-149 | Permanent failures retried | Proper DLQ routing |
+| EM-155 | No message prioritization | WFQ scheduler with transactional fast-path |
 
 ## License
 
