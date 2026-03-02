@@ -16,6 +16,7 @@ type Config struct {
 	Queues    QueuesConfig
 	MNO       MNOConfig
 	RateLimit RateLimitConfig
+	Priority  PriorityConfig
 }
 
 // AppConfig holds application-level configuration
@@ -97,6 +98,29 @@ type RateLimitConfig struct {
 	Equitel   int
 	CM        int
 	Default   int
+}
+
+// PriorityConfig holds message prioritization settings
+type PriorityConfig struct {
+	// Enabled turns on priority scheduling
+	Enabled bool
+
+	// RedisWeightsKey is the Redis key for queue weights (hash)
+	RedisWeightsKey string
+
+	// DefaultQueueWeights are initial weights if Redis is empty
+	// Format from env: "QUEUE1:10,QUEUE2:5,QUEUE3:1"
+	DefaultQueueWeights map[string]int
+
+	// StarvationPreventionRatio ensures low-priority queues get processed
+	// e.g., 0.1 means at least 10% of capacity goes to lowest priority queue
+	StarvationPreventionRatio float64
+
+	// DefaultWeight for queues not explicitly configured
+	DefaultWeight int
+
+	// TransactionalWorkers is the number of dedicated workers for transactional fast-path
+	TransactionalWorkers int
 }
 
 // Load loads configuration from environment variables
@@ -184,6 +208,21 @@ func Load() *Config {
 			CM:        getEnvAsInt("RATE_LIMIT_CM", 20),
 			Default:   getEnvAsInt("RATE_LIMIT_DEFAULT", 20),
 		},
+		Priority: PriorityConfig{
+			Enabled:         getEnvAsBool("PRIORITY_ENABLED", false),
+			RedisWeightsKey: getEnv("PRIORITY_REDIS_WEIGHTS_KEY", "sms:priority:queue_weights"),
+			DefaultQueueWeights: getEnvAsQueueWeights("PRIORITY_DEFAULT_WEIGHTS", map[string]int{
+				"GOLD_PARTNERS_QUEUE":   10,
+				"BETIKA_GOLD":           10,
+				"PEPETA_GOLD":           10,
+				"TITANIC-KE_SMS_QUEUE":  1,
+				"CONSUME_TO_MNO":        1,
+				"SMS_MNO_GATEWAY_QUEUE": 1,
+			}),
+			StarvationPreventionRatio: getEnvAsFloat64("PRIORITY_STARVATION_RATIO", 0.1),
+			DefaultWeight:             getEnvAsInt("PRIORITY_DEFAULT_WEIGHT", 1),
+			TransactionalWorkers:      getEnvAsInt("PRIORITY_TRANSACTIONAL_WORKERS", 5),
+		},
 	}
 }
 
@@ -235,6 +274,36 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolVal, err := strconv.ParseBool(value); err == nil {
 			return boolVal
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsFloat64(key string, defaultValue float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatVal
+		}
+	}
+	return defaultValue
+}
+
+// getEnvAsQueueWeights parses queue weights from env var format: "QUEUE1:10,QUEUE2:5"
+func getEnvAsQueueWeights(key string, defaultValue map[string]int) map[string]int {
+	if value, exists := os.LookupEnv(key); exists && value != "" {
+		result := make(map[string]int)
+		pairs := strings.Split(value, ",")
+		for _, pair := range pairs {
+			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+			if len(parts) == 2 {
+				queueName := strings.TrimSpace(parts[0])
+				if weight, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && queueName != "" {
+					result[queueName] = weight
+				}
+			}
+		}
+		if len(result) > 0 {
+			return result
 		}
 	}
 	return defaultValue
