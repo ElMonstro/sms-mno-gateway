@@ -33,6 +33,14 @@ type Metrics interface {
 
 	// Health metrics
 	SetHealthy(component string, healthy bool)
+
+	// Priority routing metrics (EM-155)
+	IncPriorityRouted(messageType, queue string)
+	IncTransactionalProcessed(status string)
+	SetTransactionalQueueDepth(depth int)
+	IncSchedulerProcessed(queue string)
+	SetSchedulerWeight(queue string, weight int)
+	IncStarvationTriggers(queue string)
 }
 
 // MetricLabels contains common labels for metrics
@@ -53,8 +61,17 @@ const (
 
 // Component names for health metrics
 const (
-	ComponentRabbitMQ = "rabbitmq"
-	ComponentRedis    = "redis"
-	ComponentSDP      = "sdp"
-	ComponentSMPP     = "smpp"
+	ComponentRabbitMQ      = "rabbitmq"
+	ComponentRedis         = "redis"
+	ComponentSDP           = "sdp"
+	ComponentSMPP          = "smpp"
+	ComponentPriorityStore = "priority_store"
+	ComponentTransactional = "transactional_handler"
+	ComponentScheduler     = "priority_scheduler"
+)
+
+// Message type constants for priority routing metrics
+const (
+	MessageTypeTransactional = "transactional"
+	MessageTypePromotional   = "promotional"
 )
