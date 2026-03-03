@@ -12,6 +12,7 @@
 8. [Data Flow & State](#data-flow--state)
 9. [Configuration Reference](#configuration-reference)
 10. [Metrics & Observability](#metrics--observability)
+11. [Future Improvements](#future-improvements)
 
 ---
 
@@ -22,7 +23,7 @@
 ### Key Features
 
 - **Multi-MNO Support**: Safaricom (SDP + SMPP), Airtel, Telkom, Equitel, CM International
-- **Priority Routing**: Weighted Fair Queuing for promotional, fast-path for transactional
+- **Priority Routing**: Credit-Based Weighted Round Robin (WRR) for promotional, fast-path for transactional
 - **Resilience**: Circuit breakers, rate limiting, retry logic
 - **Observability**: Prometheus metrics, structured logging
 - **Hot-Reload**: Queue weights configurable at runtime via Redis
@@ -38,7 +39,7 @@
 | EM-147 | No observability | Prometheus metrics |
 | EM-148 | Cascading failures | Per-MNO circuit breakers |
 | EM-149 | Permanent failures retried | Proper DLQ routing |
-| EM-155 | No message prioritization | WFQ scheduler with transactional fast-path |
+| EM-155 | No message prioritization | Credit-Based WRR scheduler with transactional fast-path |
 
 ---
 
@@ -73,7 +74,7 @@ graph TB
 
         subgraph "Processing Layer"
             TH[Transactional Handler<br/>Fast-Path Workers]
-            PS[Priority Scheduler<br/>WFQ Algorithm]
+            PS[Priority Scheduler<br/>Credit-Based WRR]
             PROC[Processor<br/>Worker Pool]
         end
 
@@ -251,13 +252,13 @@ flowchart TD
     TX_CHECK -.->|No - Fallback| TX_FALLBACK[FALLBACK: Process via<br/>Processor directly]
 
     PROMO_MSGS --> SCHED_CHECK{Has<br/>Scheduler?}
-    SCHED_CHECK -->|Yes - Normal path| WFQ[PriorityScheduler<br/>.ProcessMessages]
-    SCHED_CHECK -.->|No - Fallback| PROMO_FALLBACK[FALLBACK: Process via<br/>Processor directly<br/>No WFQ applied]
+    SCHED_CHECK -->|Yes - Normal path| SCHED[PriorityScheduler<br/>.ProcessMessages]
+    SCHED_CHECK -.->|No - Fallback| PROMO_FALLBACK[FALLBACK: Process via<br/>Processor directly<br/>No WRR applied]
 
     TX_BATCH --> TX_WORKERS[Dedicated TX Workers<br/>Concurrent Processing]
     TX_FALLBACK -.-> PROC_POOL
-    WFQ --> WFQ_WAIT[Wait for WFQ slot<br/>based on queue weight]
-    WFQ_WAIT --> PROC_POOL
+    SCHED --> CREDIT_WAIT[Acquire credit<br/>from queue's credit channel]
+    CREDIT_WAIT --> PROC_POOL
     PROMO_FALLBACK -.-> PROC_POOL
 
     subgraph "Message Processing"
@@ -385,7 +386,7 @@ sequenceDiagram
 
     alt Has promotional messages
         MR->>PS: ProcessMessages(ctx, messages, queueName)
-        PS->>PS: waitForSlot() - WFQ delay
+        PS->>PS: acquireCredit() - Wait for credit from queue's channel
         PS->>P: ProcessMessages(ctx, messages)
     else Only transactional
         MR->>P: ProcessMessages(ctx, messages)
@@ -463,7 +464,7 @@ flowchart TB
         PARSE --> CLASSIFY
     end
 
-    subgraph "Transactional Path - Fast, No WFQ"
+    subgraph "Transactional Path - Fast, No WRR"
         TX_HANDLER[TransactionalHandler]
         TX_BATCH[ProcessBatch<br/>Synchronous]
         TX_POOL[Dedicated Workers<br/>Default: 5]
@@ -472,18 +473,27 @@ flowchart TB
         TX_BATCH --> TX_POOL
     end
 
-    subgraph "Promotional Path - WFQ Scheduled"
+    subgraph "Promotional Path - Credit-Based WRR"
         SCHEDULER[PriorityScheduler]
-        WFQ_CALC[Calculate Wait Time<br/>waitTime = baseWait / weight]
+        ACQUIRE[Acquire Credit<br/>from queue's channel]
         STARVE_CHECK{Starvation<br/>Check}
-        WAIT[Wait for Slot]
+        WAIT[Wait for Credit<br/>if none available]
         PROCESS[ProcessMessages]
 
-        SCHEDULER --> WFQ_CALC
-        WFQ_CALC --> STARVE_CHECK
-        STARVE_CHECK -->|Queue starving<br/>Skip wait| PROCESS
-        STARVE_CHECK -->|OK| WAIT
-        WAIT --> PROCESS
+        SCHEDULER --> STARVE_CHECK
+        STARVE_CHECK -->|Queue starving<br/>maxStarvationAge exceeded| PROCESS
+        STARVE_CHECK -->|OK| ACQUIRE
+        ACQUIRE -->|Credit available| PROCESS
+        ACQUIRE -->|No credit| WAIT
+        WAIT -->|Credit refilled| PROCESS
+    end
+
+    subgraph "Background: Credit Refill Loop"
+        REFILL[Refill Loop<br/>Every refillPeriod]
+        ADD_CREDITS[Add 'weight' credits<br/>to each queue]
+
+        REFILL --> ADD_CREDITS
+        ADD_CREDITS --> REFILL
     end
 
     subgraph "Processor"
@@ -510,12 +520,15 @@ flowchart TB
 ```
 
 **Key Points:**
-- Transactional messages **bypass WFQ entirely** - processed immediately
-- Promotional messages **wait based on queue weight** before processing
+- Transactional messages **bypass WRR entirely** - processed immediately
+- Promotional messages **require a credit** from their queue's credit channel
+- Credit channel capacity = weight × creditMultiplier (e.g., weight=10, multiplier=10 → 100 credits)
+- Credits are **refilled periodically** at a rate of 'weight' credits per refillPeriod
+- **Zero latency when idle**: if credits are available, processing starts immediately
+- **Fair under contention**: higher weight queues have more credits and get refilled faster
 - Delivery is **only acked after ALL messages** (both TX and promo) are processed
-- Both paths ultimately use the same Processor worker pool for MNO sending
 
-### WFQ Weight Calculation
+### Credit-Based WRR Algorithm
 
 ```mermaid
 flowchart LR
@@ -526,12 +539,20 @@ flowchart LR
         W4[CONSUME_TO_MNO: 1]
     end
 
-    subgraph "Wait Time Calculation"
-        FORMULA["waitTime = baseWait / weight<br/>baseWait = 10ms"]
+    subgraph "Credit Channel Configuration"
+        FORMULA["capacity = weight × creditMultiplier<br/>Default multiplier: 10"]
 
-        CALC1["Weight 10 → 1ms wait"]
-        CALC2["Weight 5 → 2ms wait"]
-        CALC3["Weight 1 → 10ms wait"]
+        CALC1["Weight 10 → 100 credit capacity"]
+        CALC2["Weight 5 → 50 credit capacity"]
+        CALC3["Weight 1 → 10 credit capacity"]
+    end
+
+    subgraph "Credit Refill (Every 100ms)"
+        REFILL["Add 'weight' credits<br/>up to capacity"]
+
+        REF1["Weight 10 → +10 credits/tick"]
+        REF2["Weight 5 → +5 credits/tick"]
+        REF3["Weight 1 → +1 credit/tick"]
     end
 
     subgraph "Processing Share"
@@ -548,9 +569,26 @@ flowchart LR
     FORMULA --> CALC2
     FORMULA --> CALC3
 
-    CALC1 --> SHARE1
-    CALC3 --> SHARE2
+    CALC1 --> REFILL
+    CALC2 --> REFILL
+    CALC3 --> REFILL
+
+    REFILL --> REF1
+    REFILL --> REF2
+    REFILL --> REF3
+
+    REF1 --> SHARE1
+    REF3 --> SHARE2
 ```
+
+**How Credit-Based WRR Works:**
+
+1. **Initialization**: Each queue gets a credit channel with capacity = weight × creditMultiplier
+2. **Processing**: To process a batch, a credit must be acquired (reading from channel)
+3. **Blocking**: If no credits available, processing waits until credits are refilled
+4. **Refilling**: Background goroutine adds 'weight' credits to each queue every refillPeriod
+5. **Zero latency when idle**: Credits accumulate when queue is idle, allowing burst processing
+6. **Fair under contention**: When all queues are busy, credits distribute processing proportionally
 
 ### Starvation Prevention
 
@@ -558,18 +596,28 @@ flowchart LR
 flowchart TD
     START[Message from<br/>low-priority queue] --> CHECK_TIME{Time since<br/>last processed?}
 
-    CHECK_TIME -->|< maxStarvationTime| NORMAL_WAIT[Normal WFQ Wait<br/>baseWait / weight]
-    CHECK_TIME -->|>= maxStarvationTime| SKIP_WAIT[Skip Wait<br/>Process Immediately]
+    CHECK_TIME -->|< maxStarvationAge| NORMAL_CREDIT[Try to acquire credit<br/>from queue's channel]
+    CHECK_TIME -->|>= maxStarvationAge| BYPASS_CREDIT[Bypass credit check<br/>Grant immediate processing]
 
-    NORMAL_WAIT --> PROCESS[Process Message]
-    SKIP_WAIT --> LOG[Log starvation<br/>trigger]
-    LOG --> METRIC[Increment<br/>starvation_triggers metric]
+    NORMAL_CREDIT -->|Credit available| PROCESS[Process Message]
+    NORMAL_CREDIT -->|No credit| WAIT[Wait for credit refill]
+    WAIT --> PROCESS
+
+    BYPASS_CREDIT --> LOG[Log starvation<br/>trigger]
+    LOG --> METRIC[Increment<br/>starvation_triggers metric<br/>starvation_events counter]
     METRIC --> PROCESS
 
     PROCESS --> UPDATE[Update lastProcessed<br/>timestamp]
 
-    NOTE1[/"maxStarvationTime = 1s / starvationRatio<br/>Default ratio 0.1 → 10 second max wait"/]
+    NOTE1[/"maxStarvationAge: default 10 seconds<br/>Ensures low-priority queues eventually get processed"/]
 ```
+
+**Starvation Prevention Mechanism:**
+
+- If a queue hasn't processed any messages for longer than `maxStarvationAge` (default: 10 seconds), it bypasses the credit check and processes immediately
+- This ensures that even weight=1 queues don't starve indefinitely when competing with weight=10 queues
+- The `starvation_events` metric tracks how often this safety mechanism triggers
+- In normal operation with reasonable traffic, starvation rarely triggers
 
 ### Hot-Reload Weight Updates
 
@@ -597,10 +645,213 @@ sequenceDiagram
 
     WATCHER->>SCHED: updateWeights(weights)
     SCHED->>SCHED: Update internal weights map
-    SCHED->>SCHED: Update queue states
+    SCHED->>SCHED: Resize credit channels<br/>(new capacity = weight × multiplier)
+    SCHED->>SCHED: Transfer existing credits to new channel
     SCHED->>SCHED: Emit metrics
 
-    Note over SCHED: New weights active immediately<br/>No restart required
+    Note over SCHED: New weights active immediately<br/>Credit channels resized<br/>No restart required
+```
+
+**Credit Channel Resizing:**
+
+When weights change via hot-reload:
+1. A new credit channel is created with the new capacity
+2. Existing credits are transferred from the old channel (up to new capacity)
+3. The old channel is replaced atomically
+4. Refill loop continues with new weight values
+
+### Credit Channel Technical Deep-Dive
+
+The credit channel is the core mechanism that enables fair scheduling. This section explains the internal implementation.
+
+#### Data Structure
+
+```go
+type queueState struct {
+    name          string
+    weight        int
+    credits       chan struct{}  // Buffered channel as credit semaphore
+    lastProcessed time.Time
+    pendingCount  atomic.Int64
+    creditsMu     sync.Mutex     // Protects credit channel recreation
+}
+```
+
+The credit channel is a **buffered Go channel** where each `struct{}` in the channel represents one credit. This leverages Go's channel semantics as a natural semaphore:
+
+| Operation | Channel Equivalent | Behavior |
+|-----------|-------------------|----------|
+| Acquire credit | `<-creditChan` | Blocks if empty |
+| Release/add credit | `creditChan <- struct{}{}` | Blocks if full |
+| Check available | `len(creditChan)` | Non-blocking count |
+
+#### In-Memory Design
+
+Credits are stored **entirely in-memory** and are not persisted to Redis or disk:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Credit Channel (buffered chan struct{})                        │
+│                                                                 │
+│  Capacity = weight × creditMultiplier = 10 × 10 = 100          │
+│  ┌──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬───────────────────────┐       │
+│  │••│••│••│••│••│  │  │  │  │  │  ...empty slots       │       │
+│  └──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴───────────────────────┘       │
+│       ↑                                          ↑              │
+│       │                                          │              │
+│   ProcessMessages()                      creditRefillLoop()     │
+│   reads (consumes 1 credit)              writes (adds credits)  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Why in-memory only?**
+
+| Aspect | Rationale |
+|--------|-----------|
+| **Speed** | Channel operations are nanoseconds vs milliseconds for Redis |
+| **Simplicity** | No serialization/deserialization overhead |
+| **Acceptable tradeoff** | On restart, queues start fresh with full credits |
+| **Config is persisted** | Only weights live in Redis, not runtime credit counts |
+
+#### Credit Acquisition Flow
+
+```go
+func (s *PriorityScheduler) acquireCredit(ctx context.Context, qs *queueState) error {
+    // 1. STARVATION CHECK - bypass if queue hasn't processed in too long
+    if time.Since(qs.lastProcessed) > s.maxStarvationAge {
+        s.starvationEvents.Add(1)
+        return nil  // Immediate grant, no credit consumed
+    }
+
+    // 2. Try non-blocking acquisition first
+    select {
+    case <-qs.credits:
+        return nil  // Got credit instantly
+    default:
+        // No credit available, fall through
+    }
+
+    // 3. Block until credit available or context cancelled
+    select {
+    case <-qs.credits:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+```
+
+#### Credit Refill Mechanism
+
+A background goroutine runs every `refillPeriod` (default: 100ms):
+
+```go
+func (s *PriorityScheduler) refillQueueCredits(qs *queueState) {
+    // Add credits equal to weight (not full capacity)
+    // This allows gradual accumulation up to capacity
+    creditsToAdd := qs.weight  // e.g., 10 for high-priority queue
+
+    for i := 0; i < creditsToAdd; i++ {
+        select {
+        case qs.credits <- struct{}{}:
+            // Credit added
+        default:
+            break  // Channel full, stop adding
+        }
+    }
+}
+```
+
+**Refill rate examples (with 100ms refill period):**
+
+| Queue Weight | Credits Added per Tick | Max Capacity | Time to Fill from Empty |
+|--------------|----------------------|--------------|------------------------|
+| 10 | 10 credits/100ms | 100 | 1 second |
+| 5 | 5 credits/100ms | 50 | 1 second |
+| 1 | 1 credit/100ms | 10 | 1 second |
+
+#### Queue Initialization
+
+When a queue is first seen, it's initialized with **full credits**:
+
+```go
+func (s *PriorityScheduler) getOrCreateQueueState(queueName string) *queueState {
+    // ...
+    capacity := weight * s.creditMultiplier
+
+    // Create credit channel and PRE-FILL it completely
+    credits := make(chan struct{}, capacity)
+    for i := 0; i < capacity; i++ {
+        credits <- struct{}{}
+    }
+
+    qs = &queueState{
+        name:          queueName,
+        weight:        weight,
+        credits:       credits,
+        lastProcessed: time.Now(),
+    }
+    // ...
+}
+```
+
+This means:
+- **On service startup**: All queues start with full credits (burst capacity available)
+- **After idle period**: Credits accumulate up to capacity
+- **Under sustained load**: Credits consumed faster than refilled, scheduling kicks in
+
+#### Channel Resizing on Weight Change
+
+When weights are hot-reloaded, credit channels must be resized:
+
+```go
+func (s *PriorityScheduler) resizeCreditChannel(qs *queueState, newWeight int) {
+    newCapacity := newWeight * s.creditMultiplier
+    newCredits := make(chan struct{}, newCapacity)
+
+    // Transfer existing credits (up to new capacity)
+    if qs.credits != nil {
+        for transferred := 0; transferred < newCapacity; {
+            select {
+            case <-qs.credits:
+                newCredits <- struct{}{}
+                transferred++
+            default:
+                goto done  // No more credits to transfer
+            }
+        }
+    done:
+    }
+
+    qs.credits = newCredits  // Atomic replacement
+}
+```
+
+**Resize scenarios:**
+
+| Scenario | Behavior |
+|----------|----------|
+| Weight increased (1→10) | New larger channel, existing credits preserved |
+| Weight decreased (10→1) | New smaller channel, excess credits discarded |
+| Weight unchanged | No action taken |
+
+#### Observability
+
+Credit statistics are available via `GetCreditStats()`:
+
+```go
+stats := scheduler.GetCreditStats()
+// Returns:
+// {
+//   "credits_granted": 12345,          // Total credits added by refill loop
+//   "starvation_events": 5,            // Times starvation prevention triggered
+//   "credit_multiplier": 10,
+//   "refill_period_ms": 100,
+//   "queue_credits_available": {       // Current credit count per queue
+//     "GOLD_PARTNERS_QUEUE": 85,
+//     "TITANIC-KE_SMS_QUEUE": 3
+//   }
+// }
 ```
 
 ---
@@ -643,7 +894,7 @@ emalify-sms-mno-gateway/
 │       ├── service/                # Business logic
 │       │   ├── message_router.go   # TX/Promo separation
 │       │   ├── transactional_handler.go  # Fast-path
-│       │   ├── priority_scheduler.go     # WFQ
+│       │   ├── priority_scheduler.go     # Credit-Based WRR
 │       │   ├── processor.go        # Worker pool
 │       │   ├── router.go           # MNO selection
 │       │   └── result_handler.go   # Queue routing
@@ -684,7 +935,7 @@ graph TB
 
         TX_HANDLER[TransactionalHandler<br/>- Dedicated worker pool<br/>- Immediate processing<br/>- Bypass scheduler]
 
-        PRI_SCHED[PriorityScheduler<br/>- WFQ algorithm<br/>- Weight-based delays<br/>- Starvation prevention<br/>- Hot-reload support]
+        PRI_SCHED[PriorityScheduler<br/>- Credit-Based WRR<br/>- Weight-based credits<br/>- Starvation prevention<br/>- Hot-reload support]
     end
 
     subgraph "Processing Layer"
@@ -982,44 +1233,203 @@ flowchart LR
 
 ### Environment Variables
 
+#### Application Settings
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| **Application** | | |
-| `APP_ENV` | development | Environment mode |
+| `APP_ENV` | development | Environment mode (development/production) |
 | `LOG_LEVEL` | info | Log level (debug/info/warn/error) |
-| `WORKER_COUNT` | 10 | Processor worker pool size |
-| `HTTP_PORT` | 8080 | HTTP server port |
-| **Redis** | | |
-| `REDIS_HOST` | localhost | Redis host |
-| `REDIS_PORT` | 6379 | Redis port |
-| `REDIS_PASSWORD` | (empty) | Redis password |
-| `REDIS_DB` | 0 | Redis database |
-| **RabbitMQ** | | |
-| `RABBITMQ_URL` | amqp://guest:guest@localhost:5672/ | Connection URL |
-| `RABBITMQ_PREFETCH` | 10 | Prefetch count |
-| **Queues** | | |
-| `INPUT_QUEUES` | TITANIC-KE_SMS_QUEUE,CONSUME_TO_MNO | Comma-separated input queues |
-| `SAVE_TO_DB_QUEUE` | SAVE_TO_DB | Success queue |
-| `SMS_RETRY_QUEUE` | SMS_RETRY_QUEUE | Retry queue |
-| `SMS_DEAD_LETTER_QUEUE` | SMS_DEAD_LETTER_QUEUE | DLQ |
-| **Rate Limits** | | |
-| `RATE_LIMIT_SAFARICOM` | 200 | Safaricom req/s |
-| `RATE_LIMIT_AIRTEL` | 50 | Airtel req/s |
-| `RATE_LIMIT_TELKOM` | 100 | Telkom req/s |
-| `RATE_LIMIT_EQUITEL` | 20 | Equitel req/s |
-| `RATE_LIMIT_CM` | 20 | CM req/s |
-| **Priority Routing** | | |
-| `PRIORITY_ENABLED` | false | Enable priority routing |
-| `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:weights | Redis key for weights |
-| `PRIORITY_DEFAULT_WEIGHT` | 1 | Default queue weight |
-| `PRIORITY_STARVATION_RATIO` | 0.1 | Starvation prevention ratio |
-| `PRIORITY_TRANSACTIONAL_WORKERS` | 5 | TX handler workers |
-| `PRIORITY_DEFAULT_QUEUE_WEIGHTS` | (see below) | Initial weights |
+| `WORKER_COUNT` | 10 | Processor worker pool size for message processing |
+
+#### HTTP Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HTTP_PORT` | 8080 | HTTP server port for /health, /ready, /metrics |
+| `HTTP_READ_TIMEOUT` | 30s | HTTP request read timeout |
+| `HTTP_WRITE_TIMEOUT` | 30s | HTTP response write timeout |
+| `HTTP_IDLE_TIMEOUT` | 60s | HTTP keep-alive idle timeout |
+
+#### Redis
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_HOST` | localhost | Redis server hostname |
+| `REDIS_PORT` | 6379 | Redis server port |
+| `REDIS_PASSWORD` | (empty) | Redis authentication password |
+| `REDIS_DB` | 0 | Redis database number (0-15) |
+
+#### RabbitMQ
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RABBITMQ_URL` | amqp://guest:guest@localhost:5672/ | RabbitMQ connection URL |
+| `RABBITMQ_PREFETCH` | 10 | Consumer prefetch count (messages buffered) |
+| `RABBITMQ_RECONNECT_WAIT` | 5s | Wait time between reconnection attempts |
+
+#### Queue Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INPUT_QUEUES` | TITANIC-KE_SMS_QUEUE,CONSUME_TO_MNO | Comma-separated input queue names |
+| `SAVE_TO_DB_QUEUE` | SAVE_TO_DB | Queue for successful messages |
+| `SMS_RETRY_QUEUE` | SMS_RETRY_QUEUE | Queue for retryable failures |
+| `SMS_DEAD_LETTER_QUEUE` | SMS_DEAD_LETTER_QUEUE | Queue for permanent failures |
+
+#### Rate Limits (per second)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_SAFARICOM` | 200 | Max requests/second to Safaricom |
+| `RATE_LIMIT_AIRTEL` | 50 | Max requests/second to Airtel |
+| `RATE_LIMIT_TELKOM` | 100 | Max requests/second to Telkom |
+| `RATE_LIMIT_EQUITEL` | 20 | Max requests/second to Equitel |
+| `RATE_LIMIT_CM` | 20 | Max requests/second to CM |
+| `RATE_LIMIT_DEFAULT` | 20 | Default rate limit for other networks |
+
+#### Safaricom SDP (REST API)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SDP_AUTH_URL` | https://dsvc2.safaricom.com:9480/api/auth/login | OAuth token endpoint |
+| `SDP_SEND_URL` | https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms | Send SMS endpoint |
+| `SDP_USERNAME` | (required) | SDP API username |
+| `SDP_PASSWORD` | (required) | SDP API password |
+| `SDP_DLR_URL` | https://smsdlr.emalify.com/save | DLR callback URL |
+| `SDP_TOKEN_KEY` | SDP_TOKEN_KEY | Redis key for cached token |
+| `SDP_TOKEN_TTL` | 25m | Token cache duration |
+
+#### Safaricom SMPP (Kannel)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAFARICOM_SMPP_URL` | http://10.0.0.87:80/cgi-bin/sendsms | Kannel HTTP endpoint |
+| `SAFARICOM_SMPP_SMSC` | SAFARICOM | SMSC identifier |
+| `SAFARICOM_SMPP_USERNAME` | (required) | Kannel username |
+| `SAFARICOM_SMPP_PASSWORD` | (required) | Kannel password |
+| `SAFARICOM_SMPP_DLR_URL` | http://10.0.0.100:8088/save | DLR callback URL |
+
+#### Airtel SMPP
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AIRTEL_SMPP_URL` | http://10.0.0.88:14013/cgi-bin/sendsms | Kannel HTTP endpoint |
+| `AIRTEL_SMPP_SMSC` | AIRTEL | SMSC identifier |
+| `AIRTEL_SMPP_USERNAME` | (required) | Kannel username |
+| `AIRTEL_SMPP_PASSWORD` | (required) | Kannel password |
+| `AIRTEL_SMPP_DLR_URL` | http://10.0.0.100:8088/save | DLR callback URL |
+
+#### Telkom SMPP
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELKOM_SMPP_URL` | http://34.77.25.98:14013/cgi-bin/sendsms | Kannel HTTP endpoint |
+| `TELKOM_SMPP_SMSC` | TELKOM | SMSC identifier |
+| `TELKOM_SMPP_USERNAME` | (required) | Kannel username |
+| `TELKOM_SMPP_PASSWORD` | (required) | Kannel password |
+| `TELKOM_SMPP_DLR_URL` | http://197.248.69.107:48088/save | DLR callback URL |
+
+#### Equitel SMPP
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EQUITEL_SMPP_URL` | http://10.0.0.87:80/cgi-bin/sendsms | Kannel HTTP endpoint |
+| `EQUITEL_SMPP_SMSC` | EQUITEL | SMSC identifier |
+| `EQUITEL_SMPP_USERNAME` | (required) | Kannel username |
+| `EQUITEL_SMPP_PASSWORD` | (required) | Kannel password |
+| `EQUITEL_SMPP_DLR_URL` | http://10.0.0.100:8088/save | DLR callback URL |
+
+#### CM International SMPP
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CM_SMPP_URL` | http://34.77.25.98:14013/cgi-bin/sendsms | Kannel HTTP endpoint |
+| `CM_SMPP_SMSC` | CM | SMSC identifier |
+| `CM_SMPP_USERNAME` | (required) | Kannel username |
+| `CM_SMPP_PASSWORD` | (required) | Kannel password |
+| `CM_SMPP_DLR_URL` | http://10.0.0.100:8088/save | DLR callback URL |
+
+#### Priority Routing (Credit-Based WRR)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PRIORITY_ENABLED` | false | Enable priority routing with Credit-Based WRR |
+| `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:queue_weights | Redis hash key for queue weights |
+| `PRIORITY_DEFAULT_WEIGHTS` | (see below) | Initial queue weights (format: `QUEUE1:10,QUEUE2:5`) |
+| `PRIORITY_DEFAULT_WEIGHT` | 1 | Weight for queues not explicitly configured |
+| `PRIORITY_TRANSACTIONAL_WORKERS` | 5 | Dedicated workers for transactional fast-path |
+| `PRIORITY_CREDIT_MULTIPLIER` | 10 | Credits per weight unit (capacity = weight × multiplier) |
+| `PRIORITY_REFILL_PERIOD_MS` | 100 | Credit refill interval in milliseconds |
+| `PRIORITY_MAX_STARVATION_AGE_SEC` | 10 | Max seconds without processing before starvation bypass |
+
+### Credit-Based WRR Configuration Details
+
+| Parameter | Formula | Example |
+|-----------|---------|---------|
+| Credit Channel Capacity | `weight × creditMultiplier` | weight=10, multiplier=10 → 100 credits |
+| Credit Refill Rate | `weight` credits per `refillPeriod` | weight=10, period=100ms → 100 credits/sec max |
+| Approximate Throughput Ratio | Proportional to weight | weight=10 vs weight=1 → ~10× throughput |
+| Starvation Prevention | Bypass credits if idle > `maxStarvationAge` | After 10s → immediate processing |
 
 ### Default Queue Weights
 
 ```env
-PRIORITY_DEFAULT_QUEUE_WEIGHTS=GOLD_PARTNERS_QUEUE:10,BETIKA_GOLD:10,PEPETA_GOLD:10,TITANIC-KE_SMS_QUEUE:1,CONSUME_TO_MNO:1,SMS_MNO_GATEWAY_QUEUE:1
+PRIORITY_DEFAULT_WEIGHTS=GOLD_PARTNERS_QUEUE:10,BETIKA_GOLD:10,PEPETA_GOLD:10,TITANIC-KE_SMS_QUEUE:1,CONSUME_TO_MNO:1,SMS_MNO_GATEWAY_QUEUE:1
+```
+
+### Sample .env File
+
+```env
+# Application
+APP_ENV=production
+LOG_LEVEL=info
+WORKER_COUNT=20
+
+# HTTP Server
+HTTP_PORT=8080
+
+# Redis
+REDIS_HOST=redis.internal
+REDIS_PORT=6379
+REDIS_PASSWORD=secretpassword
+REDIS_DB=0
+
+# RabbitMQ
+RABBITMQ_URL=amqp://user:pass@rabbitmq.internal:5672/
+RABBITMQ_PREFETCH=50
+
+# Queues
+INPUT_QUEUES=TITANIC-KE_SMS_QUEUE,CONSUME_TO_MNO,GOLD_PARTNERS_QUEUE
+SAVE_TO_DB_QUEUE=SAVE_TO_DB
+SMS_RETRY_QUEUE=SMS_RETRY_QUEUE
+SMS_DEAD_LETTER_QUEUE=SMS_DEAD_LETTER_QUEUE
+
+# Rate Limits
+RATE_LIMIT_SAFARICOM=200
+RATE_LIMIT_AIRTEL=50
+RATE_LIMIT_TELKOM=100
+RATE_LIMIT_EQUITEL=20
+RATE_LIMIT_CM=20
+
+# Priority Routing
+PRIORITY_ENABLED=true
+PRIORITY_DEFAULT_WEIGHTS=GOLD_PARTNERS_QUEUE:10,TITANIC-KE_SMS_QUEUE:5,CONSUME_TO_MNO:1
+PRIORITY_DEFAULT_WEIGHT=1
+PRIORITY_TRANSACTIONAL_WORKERS=10
+PRIORITY_CREDIT_MULTIPLIER=10
+PRIORITY_REFILL_PERIOD_MS=100
+PRIORITY_MAX_STARVATION_AGE_SEC=10
+
+# Safaricom SDP (promotional messages)
+SDP_AUTH_URL=https://dsvc2.safaricom.com:9480/api/auth/login
+SDP_SEND_URL=https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms
+SDP_USERNAME=your_username
+SDP_PASSWORD=your_password
+
+# Safaricom SMPP (transactional messages)
+SAFARICOM_SMPP_URL=http://kannel.internal:13013/cgi-bin/sendsms
+SAFARICOM_SMPP_USERNAME=kannel_user
+SAFARICOM_SMPP_PASSWORD=kannel_pass
 ```
 
 ---
@@ -1127,6 +1537,47 @@ sequenceDiagram
 
     App->>OS: Exit 0
 ```
+
+---
+
+## Future Improvements
+
+### True Weighted Fair Queuing (WFQ)
+
+The current Credit-Based Weighted Round Robin implementation provides excellent performance and simplicity. However, for even more sophisticated scheduling, a True WFQ implementation could be considered:
+
+**Current: Credit-Based WRR**
+- Uses buffered channels as credit semaphores
+- Simple, efficient, zero latency when idle
+- Periodic refill adds credits proportional to weight
+- Good for most use cases
+
+**Potential: True WFQ with Virtual Time**
+```
+Algorithm:
+1. Maintain global virtual_time
+2. For each message: virtual_finish = max(virtual_time, queue.virtual_finish) + (1/weight)
+3. Always process message with lowest virtual_finish
+4. Advance virtual_time to processed message's virtual_finish
+```
+
+**Benefits of True WFQ:**
+- Perfect fairness proportional to weights at any time window
+- No periodic refill needed - fairness is inherent to the algorithm
+- Handles bursty traffic more gracefully
+- Better latency guarantees for high-priority queues
+
+**Trade-offs:**
+- More complex implementation (priority queue + virtual time tracking)
+- Slightly higher overhead per message
+- Current WRR already provides good fairness for our use case
+
+**When to consider True WFQ:**
+- If strict fairness guarantees are required
+- If traffic patterns become extremely bursty
+- If sub-second scheduling precision is needed
+
+For now, Credit-Based WRR provides an excellent balance of simplicity, performance, and fairness.
 
 ---
 

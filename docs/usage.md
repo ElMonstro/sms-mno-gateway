@@ -358,7 +358,7 @@ When rate limited, messages are marked as retryable and sent to the retry queue.
 
 ## Priority Routing (EM-155)
 
-When enabled, the priority routing system separates transactional and promotional messages for optimal delivery:
+When enabled, the priority routing system separates transactional and promotional messages for optimal delivery using **Credit-Based Weighted Round Robin (WRR)**.
 
 ### Overview
 
@@ -374,15 +374,15 @@ flowchart LR
 
     subgraph "Processing Paths"
         TX[Transactional Handler<br/>Fast-Path]
-        WFQ[Priority Scheduler<br/>Weighted Fair Queuing]
+        WRR[Priority Scheduler<br/>Credit-Based WRR]
     end
 
     MSG --> CHECK
     CHECK -->|TRANSACTIONAL| TX
-    CHECK -->|Other| WFQ
+    CHECK -->|Other| WRR
 
     TX --> MNO[MNO Senders]
-    WFQ --> MNO
+    WRR --> MNO
 ```
 
 ### Enabling Priority Routing
@@ -393,24 +393,36 @@ Set `PRIORITY_ENABLED=true` in your `.env` file:
 PRIORITY_ENABLED=true
 PRIORITY_REDIS_WEIGHTS_KEY=sms:priority:weights
 PRIORITY_DEFAULT_WEIGHT=1
-PRIORITY_STARVATION_RATIO=0.1
 PRIORITY_TRANSACTIONAL_WORKERS=5
+
+# Credit-Based WRR Configuration
+PRIORITY_CREDIT_MULTIPLIER=10       # Credits per weight unit (capacity = weight × multiplier)
+PRIORITY_REFILL_PERIOD_MS=100       # Credit refill interval in milliseconds
+PRIORITY_MAX_STARVATION_AGE_SEC=10  # Max seconds before starvation prevention
 ```
 
 ### Configuring Queue Weights
 
-Higher weight queues receive proportionally more processing time:
+Higher weight queues receive proportionally more credits and processing capacity:
 
 ```env
 # Format: queue1:weight1,queue2:weight2,...
 PRIORITY_DEFAULT_QUEUE_WEIGHTS=TITANIC-KE_SMS_QUEUE:10,CONSUME_TO_MNO:5,SMS_MNO_GATEWAY_QUEUE:1
 ```
 
-| Queue | Weight | Share |
-|-------|--------|-------|
-| TITANIC-KE_SMS_QUEUE | 10 | ~62.5% |
-| CONSUME_TO_MNO | 5 | ~31.25% |
-| SMS_MNO_GATEWAY_QUEUE | 1 | ~6.25% |
+| Queue | Weight | Credit Capacity | Refill Rate | Approx Share |
+|-------|--------|-----------------|-------------|--------------|
+| TITANIC-KE_SMS_QUEUE | 10 | 100 credits | +10/tick | ~62.5% |
+| CONSUME_TO_MNO | 5 | 50 credits | +5/tick | ~31.25% |
+| SMS_MNO_GATEWAY_QUEUE | 1 | 10 credits | +1/tick | ~6.25% |
+
+**How Credit-Based WRR Works:**
+
+1. Each queue has a credit channel with capacity = `weight × creditMultiplier`
+2. Processing a batch requires acquiring one credit from the queue's channel
+3. A background goroutine refills credits every `refillPeriod` at rate = `weight` credits/tick
+4. **Zero latency when idle**: Credits accumulate, allowing instant burst processing
+5. **Fair under contention**: Higher weight = more credits = more throughput
 
 ### Hot-Reload Weights at Runtime
 
@@ -435,22 +447,29 @@ redis-cli HGETALL sms:priority:weights
 
 ### Transactional Fast-Path
 
-Messages with `packageId="TRANSACTIONAL"` bypass the WFQ scheduler entirely:
+Messages with `packageId="TRANSACTIONAL"` bypass the WRR scheduler entirely:
 
 - **Dedicated worker pool**: Configurable via `PRIORITY_TRANSACTIONAL_WORKERS` (default: 5)
-- **No queuing delays**: Processed immediately by available workers
+- **No credit requirements**: Processed immediately by available workers
 - **Separate from promotional**: Won't be delayed by promotional traffic
+- **Synchronous batch processing**: `ProcessBatch()` completes before delivery ack
 
 ### Starvation Prevention
 
-Low-priority queues are guaranteed minimum throughput:
+Low-priority queues are guaranteed minimum processing even under heavy contention:
 
 ```env
-# Minimum 10% throughput for lowest priority queues
-PRIORITY_STARVATION_RATIO=0.1
+# Maximum time (seconds) a queue can go without processing before bypass
+PRIORITY_MAX_STARVATION_AGE_SEC=10
 ```
 
-If a queue hasn't been processed in `1/STARVATION_RATIO` seconds (10 seconds at 0.1), it gets immediate priority.
+If a queue hasn't processed any messages for longer than `maxStarvationAge`:
+- The credit check is bypassed
+- Processing proceeds immediately
+- A `starvation_triggers` metric is incremented
+- The `lastProcessed` timestamp is updated
+
+This ensures that even weight=1 queues don't starve indefinitely when competing with weight=10 queues.
 
 ### Priority Metrics
 
@@ -469,12 +488,23 @@ Monitor priority routing via Prometheus:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIORITY_ENABLED` | false | Enable priority routing |
-| `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:weights | Redis hash key for weights |
-| `PRIORITY_DEFAULT_QUEUE_WEIGHTS` | (empty) | Initial queue weights |
+| `PRIORITY_ENABLED` | false | Enable priority routing with Credit-Based WRR |
+| `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:weights | Redis hash key for queue weights |
+| `PRIORITY_DEFAULT_QUEUE_WEIGHTS` | (see below) | Initial queue weights (format: `QUEUE1:10,QUEUE2:5`) |
 | `PRIORITY_DEFAULT_WEIGHT` | 1 | Weight for unconfigured queues |
-| `PRIORITY_STARVATION_RATIO` | 0.1 | Minimum throughput ratio |
-| `PRIORITY_TRANSACTIONAL_WORKERS` | 5 | Dedicated transactional workers |
+| `PRIORITY_TRANSACTIONAL_WORKERS` | 5 | Dedicated workers for transactional fast-path |
+| `PRIORITY_CREDIT_MULTIPLIER` | 10 | Credits per weight unit (capacity = weight × multiplier) |
+| `PRIORITY_REFILL_PERIOD_MS` | 100 | Credit refill interval in milliseconds |
+| `PRIORITY_MAX_STARVATION_AGE_SEC` | 10 | Max seconds without processing before starvation bypass |
+
+**Configuration Details:**
+
+| Parameter | Formula/Behavior | Example |
+|-----------|------------------|---------|
+| Credit Capacity | `weight × creditMultiplier` | weight=10, multiplier=10 → 100 credits |
+| Refill Rate | `weight` credits per `refillPeriod` | weight=10, period=100ms → 100 credits/sec |
+| Throughput Ratio | Approximately proportional to weight | weight=10 vs weight=1 → ~10× throughput |
+| Starvation Threshold | Process immediately if idle > `maxStarvationAge` | After 10s idle → bypass credits |
 
 ## Retry Logic
 
@@ -661,4 +691,4 @@ This service replaces:
 5. **Circuit breakers**: Per-MNO failure isolation (EM-148 fix)
 6. **DLQ routing**: Permanent failures go to DLQ (EM-149 fix)
 7. **Metrics**: Prometheus observability (EM-147 fix)
-8. **Priority routing**: WFQ scheduler with transactional fast-path (EM-155)
+8. **Priority routing**: Credit-Based WRR scheduler with transactional fast-path (EM-155)
