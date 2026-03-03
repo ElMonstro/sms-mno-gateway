@@ -321,3 +321,113 @@ func TestTransactionalHandler_Handle(t *testing.T) {
 		t.Errorf("Expected 1 processed, got %d", processed)
 	}
 }
+
+func TestTransactionalHandler_ProcessBatch(t *testing.T) {
+	log := logger.NewNoop()
+	metrics := mocks.NewMockMetrics()
+	factory := mocks.NewMockMNOSenderFactory()
+	mockSender := mocks.NewMockMNOSender("safaricom-smpp", domain.NetworkSafaricom)
+	factory.RegisterSender(mockSender)
+
+	router := NewRouter(factory, log)
+	publisher := mocks.NewMockQueuePublisher()
+	resultHandler := NewResultHandler(&ResultHandlerConfig{
+		Publisher:  publisher,
+		Metrics:    metrics,
+		MaxRetries: 10,
+		Logger:     log,
+	})
+	rateLimiter := ratelimit.New(&ratelimit.Config{
+		Default:   100,
+		Safaricom: 200,
+	})
+
+	handler := NewTransactionalHandler(&TransactionalHandlerConfig{
+		Router:        router,
+		ResultHandler: resultHandler,
+		RateLimiter:   rateLimiter,
+		Metrics:       metrics,
+		WorkerCount:   2,
+		Logger:        log,
+	})
+
+	// ProcessBatch processes synchronously - no need to Start()
+	msgs := []*domain.Message{
+		{
+			Correlator: "tx-batch-1",
+			Content:    "OTP: 123456",
+			MSISDN:     "254722123456",
+			NetworkRaw: "SAFARICOM",
+			PackageID:  "TRANSACTIONAL",
+			Sender:     "TestApp",
+		},
+		{
+			Correlator: "tx-batch-2",
+			Content:    "Your code: 789",
+			MSISDN:     "254722123457",
+			NetworkRaw: "SAFARICOM",
+			PackageID:  "TRANSACTIONAL",
+			Sender:     "TestApp",
+		},
+	}
+
+	result := handler.ProcessBatch(context.Background(), msgs)
+
+	if result == nil {
+		t.Fatal("ProcessBatch() returned nil")
+	}
+
+	if result.TotalCount != 2 {
+		t.Errorf("Expected TotalCount 2, got %d", result.TotalCount)
+	}
+
+	// Check stats were updated
+	processed, _ := handler.Stats()
+	if processed != 2 {
+		t.Errorf("Expected 2 processed, got %d", processed)
+	}
+
+	// Verify messages were sent
+	sentMsgs := mockSender.GetSentMessages()
+	if len(sentMsgs) != 2 {
+		t.Errorf("Expected 2 sent messages, got %d", len(sentMsgs))
+	}
+}
+
+func TestTransactionalHandler_ProcessBatch_EmptyBatch(t *testing.T) {
+	log := logger.NewNoop()
+	metrics := mocks.NewMockMetrics()
+	factory := mocks.NewMockMNOSenderFactory()
+	factory.RegisterSender(mocks.NewMockMNOSender("safaricom-smpp", domain.NetworkSafaricom))
+
+	router := NewRouter(factory, log)
+	publisher := mocks.NewMockQueuePublisher()
+	resultHandler := NewResultHandler(&ResultHandlerConfig{
+		Publisher:  publisher,
+		Metrics:    metrics,
+		MaxRetries: 10,
+		Logger:     log,
+	})
+	rateLimiter := ratelimit.New(&ratelimit.Config{
+		Default: 100,
+	})
+
+	handler := NewTransactionalHandler(&TransactionalHandlerConfig{
+		Router:        router,
+		ResultHandler: resultHandler,
+		RateLimiter:   rateLimiter,
+		Metrics:       metrics,
+		WorkerCount:   2,
+		Logger:        log,
+	})
+
+	result := handler.ProcessBatch(context.Background(), []*domain.Message{})
+
+	if result == nil {
+		t.Fatal("ProcessBatch() returned nil for empty batch")
+	}
+
+	if result.TotalCount != 0 {
+		t.Errorf("Expected TotalCount 0 for empty batch, got %d", result.TotalCount)
+	}
+}

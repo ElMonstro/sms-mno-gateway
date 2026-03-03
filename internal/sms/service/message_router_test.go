@@ -257,3 +257,99 @@ func TestMessageRouterConfig(t *testing.T) {
 		t.Error("Router logger not set")
 	}
 }
+
+func TestMessageRouter_RouteDelivery_AcksAfterProcessing(t *testing.T) {
+	log := logger.NewNoop()
+	metrics := mocks.NewMockMetrics()
+
+	// Create mixed messages
+	msgs := []*domain.Message{
+		{
+			Correlator: "tx-1",
+			Content:    "OTP: 123456",
+			MSISDN:     "254722123456",
+			NetworkRaw: "SAFARICOM",
+			PackageID:  "TRANSACTIONAL",
+			Sender:     "TEST",
+		},
+		{
+			Correlator: "promo-1",
+			Content:    "Special offer!",
+			MSISDN:     "254722123457",
+			NetworkRaw: "SAFARICOM",
+			PackageID:  "0",
+			Sender:     "TEST",
+		},
+	}
+
+	router := NewMessageRouter(&MessageRouterConfig{
+		Metrics: metrics,
+		Logger:  log,
+		// No handlers or processor - just counting and acking
+	})
+
+	delivery := mocks.NewMockDeliveryWithMessages(msgs)
+	err := router.RouteDelivery(context.Background(), delivery, "test-queue")
+
+	if err != nil {
+		t.Errorf("RouteDelivery() error = %v, want nil", err)
+	}
+
+	// Verify delivery was acked (not nacked)
+	if !delivery.AckCalled {
+		t.Error("Expected Ack() to be called after processing")
+	}
+
+	if delivery.NackCalled {
+		t.Error("Expected Nack() NOT to be called on successful processing")
+	}
+}
+
+func TestMessageRouter_RouteDelivery_CountsAllMessages(t *testing.T) {
+	log := logger.NewNoop()
+	metrics := mocks.NewMockMetrics()
+
+	// Create mixed messages
+	msgs := []*domain.Message{
+		{
+			Correlator: "tx-1",
+			PackageID:  "TRANSACTIONAL",
+			MSISDN:     "254722123456",
+			NetworkRaw: "SAFARICOM",
+			Content:    "OTP",
+			Sender:     "TEST",
+		},
+		{
+			Correlator: "tx-2",
+			PackageID:  "transactional", // lowercase
+			MSISDN:     "254722123457",
+			NetworkRaw: "SAFARICOM",
+			Content:    "OTP",
+			Sender:     "TEST",
+		},
+		{
+			Correlator: "promo-1",
+			PackageID:  "0",
+			MSISDN:     "254722123458",
+			NetworkRaw: "SAFARICOM",
+			Content:    "Promo",
+			Sender:     "TEST",
+		},
+	}
+
+	router := NewMessageRouter(&MessageRouterConfig{
+		Metrics: metrics,
+		Logger:  log,
+	})
+
+	delivery := mocks.NewMockDeliveryWithMessages(msgs)
+	_ = router.RouteDelivery(context.Background(), delivery, "test-queue")
+
+	transactional, promotional := router.GetStats()
+	if transactional != 2 {
+		t.Errorf("Expected 2 transactional, got %d", transactional)
+	}
+	if promotional != 1 {
+		t.Errorf("Expected 1 promotional, got %d", promotional)
+	}
+}
