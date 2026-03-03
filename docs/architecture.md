@@ -237,7 +237,7 @@ flowchart TD
     PARSE -->|Success| EMPTY_CHECK{Batch<br/>empty?}
 
     EMPTY_CHECK -->|Yes| ACK_EMPTY[Ack empty delivery]
-    EMPTY_CHECK -->|No| PRIORITY_CHECK{Priority<br/>enabled?<br/>PRIORITY_ENABLED}
+    EMPTY_CHECK -->|No| PRIORITY_CHECK{Priority<br/>enabled?<br/>PRIORITY_ROUTING_ENABLED}
 
     PRIORITY_CHECK -->|No - Legacy mode| DIRECT_PROC[Process via<br/>Processor directly<br/>No TX/Promo separation]
     PRIORITY_CHECK -->|Yes| MSG_ROUTER[Message Router]
@@ -358,7 +358,7 @@ flowchart TD
 | TX Handler fallback | `transactionalHandler == nil` | Handler failed to initialize, or config error |
 | Scheduler fallback | `scheduler == nil` | Scheduler failed to initialize, or config error |
 
-When `PRIORITY_ENABLED=true`, both handler and scheduler are created during bootstrap. Fallbacks are defensive code for edge cases, not expected paths.
+When `PRIORITY_ROUTING_ENABLED=true`, both handler and scheduler are created during bootstrap. Fallbacks are defensive code for edge cases, not expected paths.
 
 ### Sequence Diagram: Standard Processing
 
@@ -449,7 +449,7 @@ sequenceDiagram
 
 ### Priority Routing Architecture
 
-This diagram shows the **normal flow** when `PRIORITY_ENABLED=true` and all components initialized successfully.
+This diagram shows the **normal flow** when `PRIORITY_ROUTING_ENABLED=true` and all components initialized successfully.
 
 ```mermaid
 flowchart TB
@@ -1353,7 +1353,7 @@ flowchart LR
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIORITY_ENABLED` | false | Enable priority routing with Credit-Based WRR |
+| `PRIORITY_ROUTING_ENABLED` | false | Enable priority routing with Credit-Based WRR |
 | `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:queue_weights | Redis hash key for queue weights |
 | `PRIORITY_DEFAULT_WEIGHTS` | (see below) | Initial queue weights (format: `QUEUE1:10,QUEUE2:5`) |
 | `PRIORITY_DEFAULT_WEIGHT` | 1 | Weight for queues not explicitly configured |
@@ -1412,7 +1412,7 @@ RATE_LIMIT_EQUITEL=20
 RATE_LIMIT_CM=20
 
 # Priority Routing
-PRIORITY_ENABLED=true
+PRIORITY_ROUTING_ENABLED=true
 PRIORITY_DEFAULT_WEIGHTS=GOLD_PARTNERS_QUEUE:10,TITANIC-KE_SMS_QUEUE:5,CONSUME_TO_MNO:1
 PRIORITY_DEFAULT_WEIGHT=1
 PRIORITY_TRANSACTIONAL_WORKERS=10
@@ -1490,7 +1490,7 @@ sequenceDiagram
     Main->>Main: Initialize MNO Factory
     Main->>Main: Initialize Processor
 
-    alt PRIORITY_ENABLED=true
+    alt PRIORITY_ROUTING_ENABLED=true
         Main->>Priority: Initialize PriorityStore
         Main->>Priority: Initialize TransactionalHandler
         Main->>Priority: Initialize PriorityScheduler
@@ -1521,7 +1521,7 @@ sequenceDiagram
 
     App->>HTTP: Shutdown (drain connections)
 
-    alt PRIORITY_ENABLED
+    alt PRIORITY_ROUTING_ENABLED
         App->>Priority: Stop TransactionalHandler
         Note over Priority: Wait for workers to finish
         App->>Priority: Stop PriorityScheduler

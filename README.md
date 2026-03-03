@@ -105,7 +105,7 @@ Key environment variables:
 | `REDIS_HOST` | `localhost` | Redis host |
 | `WORKER_COUNT` | `10` | Concurrent workers |
 | `LOG_LEVEL` | `info` | Log verbosity |
-| `PRIORITY_ENABLED` | `false` | Enable Credit-Based WRR priority routing |
+| `PRIORITY_ROUTING_ENABLED` | `false` | Enable Credit-Based WRR priority routing |
 
 See [docs/usage.md](docs/usage.md#configuration-reference) for complete configuration reference.
 

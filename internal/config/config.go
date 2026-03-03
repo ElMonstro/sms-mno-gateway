@@ -215,7 +215,7 @@ func Load() *Config {
 			Default:   getEnvAsInt("RATE_LIMIT_DEFAULT", 20),
 		},
 		Priority: PriorityConfig{
-			Enabled:         getEnvAsBool("PRIORITY_ENABLED", false),
+			Enabled:         getEnvAsBool("PRIORITY_ROUTING_ENABLED", false),
 			RedisWeightsKey: getEnv("PRIORITY_REDIS_WEIGHTS_KEY", "sms:priority:queue_weights"),
 			DefaultQueueWeights: getEnvAsQueueWeights("PRIORITY_DEFAULT_WEIGHTS", map[string]int{
 				"GOLD_PARTNERS_QUEUE":   10,

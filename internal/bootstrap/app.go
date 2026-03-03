@@ -40,7 +40,7 @@ type App struct {
 	Processor       *service.Processor
 	HTTPServer      *api.Server
 
-	// Priority routing components (optional, enabled via PRIORITY_ENABLED)
+	// Priority routing components (optional, enabled via PRIORITY_ROUTING_ENABLED)
 	PriorityStore        ports.PriorityStore
 	TransactionalHandler *service.TransactionalHandler
 	PriorityScheduler    *service.PriorityScheduler

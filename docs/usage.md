@@ -387,10 +387,10 @@ flowchart LR
 
 ### Enabling Priority Routing
 
-Set `PRIORITY_ENABLED=true` in your `.env` file:
+Set `PRIORITY_ROUTING_ENABLED=true` in your `.env` file:
 
 ```env
-PRIORITY_ENABLED=true
+PRIORITY_ROUTING_ENABLED=true
 PRIORITY_REDIS_WEIGHTS_KEY=sms:priority:weights
 PRIORITY_DEFAULT_WEIGHT=1
 PRIORITY_TRANSACTIONAL_WORKERS=5
@@ -488,7 +488,7 @@ Monitor priority routing via Prometheus:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIORITY_ENABLED` | false | Enable priority routing with Credit-Based WRR |
+| `PRIORITY_ROUTING_ENABLED` | false | Enable priority routing with Credit-Based WRR |
 | `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:weights | Redis hash key for queue weights |
 | `PRIORITY_DEFAULT_QUEUE_WEIGHTS` | (see below) | Initial queue weights (format: `QUEUE1:10,QUEUE2:5`) |
 | `PRIORITY_DEFAULT_WEIGHT` | 1 | Weight for unconfigured queues |
