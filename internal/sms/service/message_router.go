@@ -11,7 +11,7 @@ import (
 
 // MessageRouter routes incoming messages to the appropriate processing path
 // - Transactional messages (packageId="TRANSACTIONAL") -> TransactionalHandler (fast-path)
-// - Promotional messages -> PriorityScheduler (WFQ)
+// - Promotional messages -> PriorityScheduler (Credit-Based WRR)
 type MessageRouter struct {
 	transactionalHandler *TransactionalHandler
 	scheduler            *PriorityScheduler
@@ -114,7 +114,7 @@ func (r *MessageRouter) RouteDelivery(ctx context.Context, delivery ports.Delive
 
 		// Use scheduler if available, otherwise fall back to processor
 		if r.scheduler != nil {
-			// Process via scheduler (applies WFQ delays)
+			// Process via scheduler (applies Credit-Based WRR scheduling)
 			if _, err := r.scheduler.ProcessMessages(ctx, promotional, queueName); err != nil {
 				r.log.WithError(err).Error("Failed to process promotional messages via scheduler")
 				processingFailed = true
@@ -149,7 +149,7 @@ func (r *MessageRouter) RouteDelivery(ctx context.Context, delivery ports.Delive
 }
 
 // ProcessDeliveryWithPriority is a convenience method for processing with full priority routing
-// Use this when you want to process a delivery with both transactional fast-path and WFQ
+// Use this when you want to process a delivery with both transactional fast-path and Credit-Based WRR
 func (r *MessageRouter) ProcessDeliveryWithPriority(ctx context.Context, delivery ports.Delivery, queueName string) error {
 	return r.RouteDelivery(ctx, delivery, queueName)
 }

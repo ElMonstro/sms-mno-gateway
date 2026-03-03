@@ -112,15 +112,21 @@ type PriorityConfig struct {
 	// Format from env: "QUEUE1:10,QUEUE2:5,QUEUE3:1"
 	DefaultQueueWeights map[string]int
 
-	// StarvationPreventionRatio ensures low-priority queues get processed
-	// e.g., 0.1 means at least 10% of capacity goes to lowest priority queue
-	StarvationPreventionRatio float64
-
 	// DefaultWeight for queues not explicitly configured
 	DefaultWeight int
 
 	// TransactionalWorkers is the number of dedicated workers for transactional fast-path
 	TransactionalWorkers int
+
+	// Credit-Based Weighted Round Robin (WRR) Configuration
+	// CreditMultiplier determines credits per weight unit (e.g., 10 means weight=5 gets 50 credits)
+	CreditMultiplier int
+
+	// RefillPeriodMs is the credit refill interval in milliseconds
+	RefillPeriodMs int
+
+	// MaxStarvationAgeSec is the max seconds without processing before starvation prevention kicks in
+	MaxStarvationAgeSec int
 }
 
 // Load loads configuration from environment variables
@@ -219,9 +225,12 @@ func Load() *Config {
 				"CONSUME_TO_MNO":        1,
 				"SMS_MNO_GATEWAY_QUEUE": 1,
 			}),
-			StarvationPreventionRatio: getEnvAsFloat64("PRIORITY_STARVATION_RATIO", 0.1),
-			DefaultWeight:             getEnvAsInt("PRIORITY_DEFAULT_WEIGHT", 1),
-			TransactionalWorkers:      getEnvAsInt("PRIORITY_TRANSACTIONAL_WORKERS", 5),
+			DefaultWeight:        getEnvAsInt("PRIORITY_DEFAULT_WEIGHT", 1),
+			TransactionalWorkers: getEnvAsInt("PRIORITY_TRANSACTIONAL_WORKERS", 5),
+			// Credit-Based WRR configuration
+			CreditMultiplier:    getEnvAsInt("PRIORITY_CREDIT_MULTIPLIER", 10),      // 10 credits per weight unit
+			RefillPeriodMs:      getEnvAsInt("PRIORITY_REFILL_PERIOD_MS", 100),      // 100ms refill interval
+			MaxStarvationAgeSec: getEnvAsInt("PRIORITY_MAX_STARVATION_AGE_SEC", 10), // 10 seconds
 		},
 	}
 }

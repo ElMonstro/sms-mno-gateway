@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/sony/gobreaker"
 
@@ -204,16 +205,22 @@ func New(cfg *config.Config) (*App, error) {
 		})
 		app.Logger.Infof("Transactional handler initialized with %d workers", cfg.Priority.TransactionalWorkers)
 
-		// Initialize priority scheduler (WFQ for promotional)
+		// Initialize priority scheduler (Credit-Based WRR for promotional)
 		app.PriorityScheduler = service.NewPriorityScheduler(&service.PrioritySchedulerConfig{
-			PriorityStore:             app.PriorityStore,
-			Processor:                 app.Processor,
-			Metrics:                   app.Metrics,
-			DefaultWeight:             cfg.Priority.DefaultWeight,
-			StarvationPreventionRatio: cfg.Priority.StarvationPreventionRatio,
-			Logger:                    app.Logger,
+			PriorityStore:    app.PriorityStore,
+			Processor:        app.Processor,
+			Metrics:          app.Metrics,
+			DefaultWeight:    cfg.Priority.DefaultWeight,
+			CreditMultiplier: cfg.Priority.CreditMultiplier,
+			RefillPeriod:     time.Duration(cfg.Priority.RefillPeriodMs) * time.Millisecond,
+			MaxStarvationAge: time.Duration(cfg.Priority.MaxStarvationAgeSec) * time.Second,
+			Logger:           app.Logger,
 		})
-		app.Logger.Info("Priority scheduler initialized")
+		app.Logger.WithFields(map[string]interface{}{
+			"credit_multiplier":  cfg.Priority.CreditMultiplier,
+			"refill_period_ms":   cfg.Priority.RefillPeriodMs,
+			"max_starvation_sec": cfg.Priority.MaxStarvationAgeSec,
+		}).Info("Priority scheduler initialized with Credit-Based WRR")
 
 		// Initialize message router
 		app.MessageRouter = service.NewMessageRouter(&service.MessageRouterConfig{
