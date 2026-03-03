@@ -227,3 +227,36 @@ func (p *Processor) ProcessRetryQueue(ctx context.Context, delivery ports.Delive
 	// Process with the same logic as regular processing
 	return p.ProcessDelivery(ctx, delivery)
 }
+
+// ProcessMessages processes a slice of messages without handling delivery ack/nack
+// This is used by MessageRouter when it needs to control ack timing
+// Returns the batch result for the caller to handle
+func (p *Processor) ProcessMessages(ctx context.Context, messages []*domain.Message) (*domain.BatchResult, error) {
+	if len(messages) == 0 {
+		return domain.NewBatchResult(), nil
+	}
+
+	start := time.Now()
+	p.log.WithField("count", len(messages)).Debug("Processing messages (no ack)")
+
+	// Process all messages
+	batchResult := p.processBatch(ctx, messages)
+	batchResult.ProcessTime = time.Since(start)
+
+	// Handle results (publish to appropriate queues)
+	if err := p.resultHandler.HandleBatchResults(ctx, batchResult); err != nil {
+		p.log.WithError(err).Error("Failed to handle batch results")
+		return batchResult, err
+	}
+
+	p.log.WithFields(map[string]interface{}{
+		"total":        batchResult.TotalCount,
+		"successful":   batchResult.SuccessCount(),
+		"retryable":    batchResult.RetryableCount(),
+		"failed":       batchResult.FailedCount(),
+		"success_rate": batchResult.SuccessRate(),
+		"duration_ms":  batchResult.ProcessTime.Milliseconds(),
+	}).Debug("Messages processing complete (no ack)")
+
+	return batchResult, nil
+}

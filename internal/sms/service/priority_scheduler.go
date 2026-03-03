@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/logger"
+	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/domain"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/ports"
 )
 
@@ -44,7 +45,6 @@ type PriorityScheduler struct {
 type queueState struct {
 	name          string
 	weight        int
-	deliveryChan  <-chan ports.Delivery
 	virtualFinish float64
 	lastProcessed time.Time
 	pendingCount  atomic.Int64
@@ -88,31 +88,9 @@ func NewPriorityScheduler(cfg *PrioritySchedulerConfig) *PriorityScheduler {
 	return scheduler
 }
 
-// RegisterQueue adds a queue to the scheduler with its delivery channel
-func (s *PriorityScheduler) RegisterQueue(name string, deliveries <-chan ports.Delivery) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	weight := s.defaultWeight
-	if w, ok := s.weights[name]; ok {
-		weight = w
-	}
-
-	s.queues[name] = &queueState{
-		name:          name,
-		weight:        weight,
-		deliveryChan:  deliveries,
-		lastProcessed: time.Now(),
-	}
-	s.processedByQueue[name] = &atomic.Uint64{}
-
-	s.log.WithFields(map[string]interface{}{
-		"queue":  name,
-		"weight": weight,
-	}).Info("Registered queue with priority scheduler")
-}
-
 // Start starts the scheduler and weight watcher
+// Note: The scheduler no longer consumes from queue channels directly.
+// Instead, MessageRouter calls ProcessMessages() which applies WFQ and processes via Processor.
 func (s *PriorityScheduler) Start() error {
 	s.log.Info("Starting priority scheduler")
 
@@ -126,14 +104,6 @@ func (s *PriorityScheduler) Start() error {
 		s.wg.Add(1)
 		go s.watchWeights()
 	}
-
-	// Start scheduler goroutines for each registered queue
-	s.mu.RLock()
-	for name, qs := range s.queues {
-		s.wg.Add(1)
-		go s.processQueue(name, qs)
-	}
-	s.mu.RUnlock()
 
 	return nil
 }
@@ -211,48 +181,6 @@ func (s *PriorityScheduler) watchWeights() {
 				return
 			}
 			s.updateWeights(weights)
-		}
-	}
-}
-
-// processQueue processes deliveries from a single queue with WFQ scheduling
-func (s *PriorityScheduler) processQueue(name string, qs *queueState) {
-	defer s.wg.Done()
-
-	s.log.WithField("queue", name).Info("Started processing queue")
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			s.log.WithField("queue", name).Info("Queue processor stopping")
-			return
-
-		case delivery, ok := <-qs.deliveryChan:
-			if !ok {
-				s.log.WithField("queue", name).Info("Queue channel closed")
-				return
-			}
-
-			// Wait for scheduling slot based on WFQ
-			s.waitForSlot(qs)
-
-			// Process the delivery
-			if err := s.processor.ProcessDelivery(s.ctx, delivery); err != nil {
-				s.log.WithError(err).WithField("queue", name).Error("Failed to process delivery")
-			}
-
-			// Update stats
-			s.processedByQueue[name].Add(1)
-			s.totalProcessed.Add(1)
-			qs.lastProcessed = time.Now()
-
-			// Emit metrics
-			if s.metrics != nil {
-				s.metrics.IncSchedulerProcessed(name)
-			}
-
-			// Update virtual time for WFQ
-			s.updateVirtualTime(qs)
 		}
 	}
 }
@@ -350,4 +278,65 @@ func (s *PriorityScheduler) SetWeight(queueName string, weight int) {
 	if qs, ok := s.queues[queueName]; ok {
 		qs.weight = weight
 	}
+}
+
+// ProcessMessages processes a batch of messages with WFQ scheduling
+// This is called by MessageRouter for promotional messages
+// It applies the appropriate delay based on queue weight before processing
+func (s *PriorityScheduler) ProcessMessages(ctx context.Context, messages []*domain.Message, queueName string) (*domain.BatchResult, error) {
+	if len(messages) == 0 {
+		return domain.NewBatchResult(), nil
+	}
+
+	// Get or create queue state for this queue
+	s.mu.Lock()
+	qs, exists := s.queues[queueName]
+	if !exists {
+		// Create a temporary queue state for WFQ calculations
+		weight := s.defaultWeight
+		if w, ok := s.weights[queueName]; ok {
+			weight = w
+		}
+		qs = &queueState{
+			name:          queueName,
+			weight:        weight,
+			lastProcessed: time.Now(),
+		}
+		s.queues[queueName] = qs
+		s.processedByQueue[queueName] = &atomic.Uint64{}
+	}
+	s.mu.Unlock()
+
+	// Apply WFQ delay based on queue weight
+	s.waitForSlot(qs)
+
+	// Process via the processor
+	result, err := s.processor.ProcessMessages(ctx, messages)
+
+	// Update stats
+	if s.processedByQueue[queueName] != nil {
+		s.processedByQueue[queueName].Add(uint64(len(messages)))
+	}
+	s.totalProcessed.Add(uint64(len(messages)))
+	qs.lastProcessed = time.Now()
+
+	// Emit metrics
+	if s.metrics != nil {
+		for range messages {
+			s.metrics.IncSchedulerProcessed(queueName)
+		}
+	}
+
+	// Update virtual time for WFQ
+	s.updateVirtualTime(qs)
+
+	s.log.WithFields(map[string]interface{}{
+		"queue":   queueName,
+		"count":   len(messages),
+		"weight":  qs.weight,
+		"success": result.SuccessCount(),
+		"failed":  result.FailedCount(),
+	}).Debug("Scheduler processed messages")
+
+	return result, err
 }

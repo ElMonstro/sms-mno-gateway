@@ -268,3 +268,58 @@ func (h *TransactionalHandler) Stats() (processed, failed uint64) {
 func (h *TransactionalHandler) QueueDepth() int {
 	return len(h.msgChan)
 }
+
+// ProcessBatch processes a batch of transactional messages and waits for completion
+// This is the preferred method when you need to know when all messages are done
+// (e.g., for proper delivery acknowledgment)
+func (h *TransactionalHandler) ProcessBatch(ctx context.Context, messages []*domain.Message) *domain.BatchResult {
+	if len(messages) == 0 {
+		return domain.NewBatchResult()
+	}
+
+	result := domain.NewBatchResult()
+	resultChan := make(chan *domain.SendResult, len(messages))
+
+	// Process all messages concurrently using the worker pool
+	var wg sync.WaitGroup
+	for _, msg := range messages {
+		wg.Add(1)
+		go func(m *domain.Message) {
+			defer wg.Done()
+			sendResult := h.processMessage(h.ctx, m)
+
+			// Track stats
+			h.processed.Add(1)
+			if sendResult.Type == domain.ResultPermanent || sendResult.Type == domain.ResultRetryable {
+				h.failed.Add(1)
+				if h.metrics != nil {
+					h.metrics.IncTransactionalProcessed(ports.MetricStatusFailed)
+				}
+			} else {
+				if h.metrics != nil {
+					h.metrics.IncTransactionalProcessed(ports.MetricStatusSuccess)
+				}
+			}
+
+			resultChan <- sendResult
+		}(msg)
+	}
+
+	// Wait for all processing to complete and close channel
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	for sendResult := range resultChan {
+		result.AddResult(sendResult)
+	}
+
+	// Handle results (publish to appropriate queues)
+	if err := h.resultHandler.HandleBatchResults(ctx, result); err != nil {
+		h.log.WithError(err).Error("Failed to handle transactional batch results")
+	}
+
+	return result
+}

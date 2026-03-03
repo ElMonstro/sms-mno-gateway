@@ -46,6 +46,7 @@ func NewMessageRouter(cfg *MessageRouterConfig) *MessageRouter {
 
 // RouteDelivery routes a delivery to the appropriate processing path
 // This is the main entry point for processing messages with priority routing
+// It processes all messages (transactional and promotional) and acks the delivery when done
 func (r *MessageRouter) RouteDelivery(ctx context.Context, delivery ports.Delivery, queueName string) error {
 	messages := delivery.Messages()
 	if len(messages) == 0 {
@@ -72,22 +73,37 @@ func (r *MessageRouter) RouteDelivery(ctx context.Context, delivery ports.Delive
 		"promotional":   len(promotional),
 	}).Debug("Routing delivery")
 
-	// Route transactional messages to fast-path
-	if len(transactional) > 0 && r.transactionalHandler != nil {
+	var processingFailed bool
+
+	// Process transactional messages via fast-path (synchronous batch processing)
+	if len(transactional) > 0 {
 		r.transactionalCount.Add(uint64(len(transactional)))
-		for _, msg := range transactional {
-			if r.metrics != nil {
+		if r.metrics != nil {
+			for range transactional {
 				r.metrics.IncPriorityRouted(ports.MessageTypeTransactional, queueName)
 			}
-			if err := r.transactionalHandler.Handle(ctx, msg, delivery, queueName); err != nil {
-				r.log.WithError(err).WithField("correlator", msg.Correlator).Error("Failed to route transactional message")
+		}
+
+		if r.transactionalHandler != nil {
+			// Use ProcessBatch for synchronous processing with completion tracking
+			result := r.transactionalHandler.ProcessBatch(ctx, transactional)
+			r.log.WithFields(map[string]interface{}{
+				"transactional_total":   result.TotalCount,
+				"transactional_success": result.SuccessCount(),
+				"transactional_failed":  result.FailedCount(),
+			}).Debug("Transactional batch processed")
+		} else {
+			// No transactional handler - process via standard processor
+			if r.processor != nil {
+				if _, err := r.processor.ProcessMessages(ctx, transactional); err != nil {
+					r.log.WithError(err).Error("Failed to process transactional messages via processor")
+					processingFailed = true
+				}
 			}
 		}
 	}
 
-	// Route promotional messages
-	// If scheduler is enabled, it will handle via WFQ
-	// Otherwise, process directly with the standard processor
+	// Process promotional messages
 	if len(promotional) > 0 {
 		r.promotionalCount.Add(uint64(len(promotional)))
 		if r.metrics != nil {
@@ -96,25 +112,38 @@ func (r *MessageRouter) RouteDelivery(ctx context.Context, delivery ports.Delive
 			}
 		}
 
-		// Create a filtered delivery with only promotional messages
-		// The scheduler/processor will handle these
-		// For now, if we have a scheduler, let it handle via its registered queue channels
-		// If no scheduler, use the standard processor
-		if r.scheduler == nil && r.processor != nil {
-			// No priority scheduling - use standard processor
-			return r.processor.ProcessDelivery(ctx, delivery)
+		// Use scheduler if available, otherwise fall back to processor
+		if r.scheduler != nil {
+			// Process via scheduler (applies WFQ delays)
+			if _, err := r.scheduler.ProcessMessages(ctx, promotional, queueName); err != nil {
+				r.log.WithError(err).Error("Failed to process promotional messages via scheduler")
+				processingFailed = true
+			}
+		} else if r.processor != nil {
+			// No scheduler - process directly
+			if _, err := r.processor.ProcessMessages(ctx, promotional); err != nil {
+				r.log.WithError(err).Error("Failed to process promotional messages via processor")
+				processingFailed = true
+			}
 		}
-		// With scheduler, messages flow through the registered queue channels
-		// which are handled by PriorityScheduler.processQueue()
 	}
 
-	// If all messages were transactional and handled, ack the delivery
-	if len(promotional) == 0 && len(transactional) > 0 {
-		// Transactional messages are handled async, so we can ack
-		// Note: This assumes transactional handler queues the messages
-		// and handles ack/nack internally per message
-		return nil // Don't ack here - transactional handler will manage its own lifecycle
+	// Ack or Nack the delivery based on processing outcome
+	if processingFailed {
+		r.log.Warn("Processing had failures, nacking delivery for requeue")
+		return delivery.Nack(true)
 	}
+
+	if err := delivery.Ack(); err != nil {
+		r.log.WithError(err).Error("Failed to acknowledge delivery")
+		return err
+	}
+
+	r.log.WithFields(map[string]interface{}{
+		"queue":         queueName,
+		"transactional": len(transactional),
+		"promotional":   len(promotional),
+	}).Debug("Delivery processed and acknowledged")
 
 	return nil
 }

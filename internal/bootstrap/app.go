@@ -266,7 +266,9 @@ func (app *App) Start(ctx context.Context) error {
 		// Start transactional handler workers
 		app.TransactionalHandler.Start()
 
-		// Start priority scheduler (includes weight watcher)
+		// Start priority scheduler (weight watcher only - no queue consumption)
+		// Note: The scheduler no longer consumes from queue channels directly.
+		// Instead, MessageRouter calls scheduler.ProcessMessages() for promotional messages.
 		if err := app.PriorityScheduler.Start(); err != nil {
 			return fmt.Errorf("failed to start priority scheduler: %w", err)
 		}
@@ -281,14 +283,11 @@ func (app *App) Start(ctx context.Context) error {
 
 		queueName := consumer.QueueName()
 
-		// Register queue with scheduler if priority is enabled
-		if app.Config.Priority.Enabled && app.PriorityScheduler != nil {
-			app.PriorityScheduler.RegisterQueue(queueName, deliveries)
-		}
-
 		// Process deliveries in a goroutine
+		// MessageRouter is the ONLY consumer - it handles both transactional and promotional
 		if app.Config.Priority.Enabled && app.MessageRouter != nil {
 			// Priority routing enabled - use MessageRouter
+			// MessageRouter processes all messages and handles delivery ack
 			go func(queueName string, deliveries <-chan ports.Delivery) {
 				app.Logger.Infof("Started processing messages from queue: %s (with priority routing)", queueName)
 				for delivery := range deliveries {
