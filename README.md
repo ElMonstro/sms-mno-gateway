@@ -102,6 +102,7 @@ Key environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+| `INPUT_QUEUES` | `TITANIC-KE_SMS_QUEUE,CONSUME_TO_MNO` | Comma-separated list of queues to consume |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `WORKER_COUNT` | `10` | Concurrent workers |
 | `LOG_LEVEL` | `info` | Log verbosity |
