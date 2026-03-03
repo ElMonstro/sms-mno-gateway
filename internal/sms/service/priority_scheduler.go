@@ -463,13 +463,17 @@ func (s *PriorityScheduler) ProcessMessages(ctx context.Context, messages []*dom
 		}
 	}
 
-	s.log.WithFields(map[string]interface{}{
-		"queue":   queueName,
-		"count":   len(messages),
-		"weight":  qs.weight,
-		"success": result.SuccessCount(),
-		"failed":  result.FailedCount(),
-	}).Debug("Scheduler processed messages")
+	// Log results (handle nil result if processor returned error)
+	logFields := map[string]interface{}{
+		"queue":  queueName,
+		"count":  len(messages),
+		"weight": qs.weight,
+	}
+	if result != nil {
+		logFields["success"] = result.SuccessCount()
+		logFields["failed"] = result.FailedCount()
+	}
+	s.log.WithFields(logFields).Debug("Scheduler processed messages")
 
 	return result, err
 }
