@@ -285,6 +285,7 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
