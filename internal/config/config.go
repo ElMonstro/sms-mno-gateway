@@ -288,15 +288,6 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-func getEnvAsFloat64(key string, defaultValue float64) float64 {
-	if value, exists := os.LookupEnv(key); exists {
-		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
-			return floatVal
-		}
-	}
-	return defaultValue
-}
-
 // getEnvAsQueueWeights parses queue weights from env var format: "QUEUE1:10,QUEUE2:5"
 func getEnvAsQueueWeights(key string, defaultValue map[string]int) map[string]int {
 	if value, exists := os.LookupEnv(key); exists && value != "" {
