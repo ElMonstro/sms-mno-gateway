@@ -236,29 +236,29 @@ flowchart TD
     PARSE -->|Success| EMPTY_CHECK{Batch<br/>empty?}
 
     EMPTY_CHECK -->|Yes| ACK_EMPTY[Ack empty delivery]
-    EMPTY_CHECK -->|No| PRIORITY_CHECK{Priority<br/>enabled?}
+    EMPTY_CHECK -->|No| PRIORITY_CHECK{Priority<br/>enabled?<br/>PRIORITY_ENABLED}
 
-    PRIORITY_CHECK -->|No| DIRECT_PROC[Process via<br/>Processor directly]
+    PRIORITY_CHECK -->|No - Legacy mode| DIRECT_PROC[Process via<br/>Processor directly<br/>No TX/Promo separation]
     PRIORITY_CHECK -->|Yes| MSG_ROUTER[Message Router]
 
-    MSG_ROUTER --> CLASSIFY{Classify each<br/>message}
+    MSG_ROUTER --> CLASSIFY{Classify by<br/>packageId}
 
-    CLASSIFY --> TX_MSGS[Transactional<br/>messages]
-    CLASSIFY --> PROMO_MSGS[Promotional<br/>messages]
+    CLASSIFY -->|packageId = TRANSACTIONAL| TX_MSGS[Transactional<br/>messages]
+    CLASSIFY -->|Other packageId| PROMO_MSGS[Promotional<br/>messages]
 
     TX_MSGS --> TX_CHECK{Has TX<br/>Handler?}
-    TX_CHECK -->|Yes| TX_BATCH[TransactionalHandler<br/>.ProcessBatch]
-    TX_CHECK -->|No| TX_FALLBACK[Process via<br/>Processor]
+    TX_CHECK -->|Yes - Normal path| TX_BATCH[TransactionalHandler<br/>.ProcessBatch]
+    TX_CHECK -.->|No - Fallback| TX_FALLBACK[FALLBACK: Process via<br/>Processor directly]
 
     PROMO_MSGS --> SCHED_CHECK{Has<br/>Scheduler?}
-    SCHED_CHECK -->|Yes| WFQ[PriorityScheduler<br/>.ProcessMessages]
-    SCHED_CHECK -->|No| PROMO_FALLBACK[Process via<br/>Processor]
+    SCHED_CHECK -->|Yes - Normal path| WFQ[PriorityScheduler<br/>.ProcessMessages]
+    SCHED_CHECK -.->|No - Fallback| PROMO_FALLBACK[FALLBACK: Process via<br/>Processor directly<br/>No WFQ applied]
 
-    TX_BATCH --> TX_WORKERS[Worker Pool<br/>Concurrent Processing]
-    TX_FALLBACK --> PROC_POOL
-    WFQ --> WFQ_WAIT[Wait for WFQ slot<br/>based on weight]
+    TX_BATCH --> TX_WORKERS[Dedicated TX Workers<br/>Concurrent Processing]
+    TX_FALLBACK -.-> PROC_POOL
+    WFQ --> WFQ_WAIT[Wait for WFQ slot<br/>based on queue weight]
     WFQ_WAIT --> PROC_POOL
-    PROMO_FALLBACK --> PROC_POOL
+    PROMO_FALLBACK -.-> PROC_POOL
 
     subgraph "Message Processing"
         TX_WORKERS --> NORMALIZE[Normalize MSISDN<br/>0xxx → 254xxx]
@@ -345,6 +345,19 @@ flowchart TD
 
     DIRECT_PROC --> NORMALIZE
 ```
+
+**Diagram Legend:**
+- **Solid lines (→)**: Normal/expected flow
+- **Dotted lines (-.->)**: Fallback paths (error recovery, should not occur in normal operation)
+
+**When do fallbacks occur?**
+
+| Fallback | Condition | Why it might happen |
+|----------|-----------|---------------------|
+| TX Handler fallback | `transactionalHandler == nil` | Handler failed to initialize, or config error |
+| Scheduler fallback | `scheduler == nil` | Scheduler failed to initialize, or config error |
+
+When `PRIORITY_ENABLED=true`, both handler and scheduler are created during bootstrap. Fallbacks are defensive code for edge cases, not expected paths.
 
 ### Sequence Diagram: Standard Processing
 
@@ -435,6 +448,8 @@ sequenceDiagram
 
 ### Priority Routing Architecture
 
+This diagram shows the **normal flow** when `PRIORITY_ENABLED=true` and all components initialized successfully.
+
 ```mermaid
 flowchart TB
     subgraph "Input"
@@ -448,31 +463,31 @@ flowchart TB
         PARSE --> CLASSIFY
     end
 
-    subgraph "Transactional Path (Fast)"
+    subgraph "Transactional Path - Fast, No WFQ"
         TX_HANDLER[TransactionalHandler]
-        TX_BATCH[ProcessBatch]
+        TX_BATCH[ProcessBatch<br/>Synchronous]
         TX_POOL[Dedicated Workers<br/>Default: 5]
 
         TX_HANDLER --> TX_BATCH
         TX_BATCH --> TX_POOL
     end
 
-    subgraph "Promotional Path (WFQ)"
+    subgraph "Promotional Path - WFQ Scheduled"
         SCHEDULER[PriorityScheduler]
-        WFQ_CALC[Calculate Wait Time<br/>baseWait / weight]
+        WFQ_CALC[Calculate Wait Time<br/>waitTime = baseWait / weight]
         STARVE_CHECK{Starvation<br/>Check}
         WAIT[Wait for Slot]
         PROCESS[ProcessMessages]
 
         SCHEDULER --> WFQ_CALC
         WFQ_CALC --> STARVE_CHECK
-        STARVE_CHECK -->|Starving| PROCESS
+        STARVE_CHECK -->|Queue starving<br/>Skip wait| PROCESS
         STARVE_CHECK -->|OK| WAIT
         WAIT --> PROCESS
     end
 
     subgraph "Processor"
-        WORKER_POOL[Worker Pool<br/>Default: 10]
+        WORKER_POOL[Worker Pool<br/>Default: 10 workers]
         MNO_SEND[Send to MNO]
 
         WORKER_POOL --> MNO_SEND
@@ -480,7 +495,7 @@ flowchart TB
 
     subgraph "Result Handling"
         RESULT[Collect Results]
-        ACK[Ack Delivery]
+        ACK[Ack Delivery<br/>After ALL messages processed]
     end
 
     DELIVERY --> PARSE
@@ -493,6 +508,12 @@ flowchart TB
     MNO_SEND --> RESULT
     RESULT --> ACK
 ```
+
+**Key Points:**
+- Transactional messages **bypass WFQ entirely** - processed immediately
+- Promotional messages **wait based on queue weight** before processing
+- Delivery is **only acked after ALL messages** (both TX and promo) are processed
+- Both paths ultimately use the same Processor worker pool for MNO sending
 
 ### WFQ Weight Calculation
 
