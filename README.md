@@ -269,18 +269,38 @@ go vet ./...
 
 Key metrics exposed:
 
-- `sms_messages_processed_total{network, status}` - Message counts
-- `sms_send_latency_seconds{network}` - Send latency histogram
-- `sms_circuit_breaker_state{network}` - Circuit breaker status
-- `sms_retries_total{network}` - Retry counts
-- `sms_dead_letters_total{network}` - Dead letter counts
-- `sms_priority_messages_routed_total{type, queue}` - Priority routing counts
-- `sms_priority_scheduler_weight{queue}` - Current queue weights
+- `emalify_sms_messages_processed_total{network, status}` - Message counts
+- `emalify_sms_send_latency_seconds{network}` - Send latency histogram
+- `emalify_sms_circuit_breaker_state{network}` - Circuit breaker status
+- `emalify_sms_retries_total{network}` - Retry counts
+- `emalify_sms_dead_letters_total{network}` - Dead letter counts
+- `emalify_sms_priority_routed_total{type, queue}` - Priority routing counts
+- `emalify_sms_scheduler_weight{queue}` - Current queue weights
+- `emalify_sms_starvation_triggers_total{queue}` - Starvation prevention triggers
+
+```bash
+# View all metrics
+curl http://localhost:8080/metrics
+
+# Filter for SMS-specific metrics
+curl -s http://localhost:8080/metrics | grep emalify_sms
+```
+
+**Prometheus scrape config:**
+
+```yaml
+scrape_configs:
+  - job_name: 'sms-mno-gateway'
+    static_configs:
+      - targets: ['sms-gateway:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
 
 ### Health Checks
 
 ```bash
-# Health check
+# Health check (liveness)
 curl http://localhost:8080/health
 
 # Readiness check

@@ -4,6 +4,61 @@
 
 This document describes how the `emalify-sms-mno-gateway` service operates, including queue configurations, MNO routing scenarios, and message handling.
 
+## Table of Contents
+
+- [Service Purpose](#service-purpose)
+- [Queue Configuration](#queue-configuration)
+  - [Input Queues](#input-queues)
+  - [Output Queues](#output-queues)
+- [Message Format](#message-format)
+  - [Input Message Schema](#input-message-schema)
+  - [Output Message Schema](#output-message-schema)
+- [MNO Configuration](#mno-configuration)
+  - [Supported Networks](#supported-networks)
+  - [Network Prefixes (Kenya)](#network-prefixes-kenya)
+  - [MSISDN Normalization](#msisdn-normalization)
+- [MNO Routing Scenarios](#mno-routing-scenarios)
+  - [Scenario 1: Safaricom Non-Transactional](#scenario-1-safaricom-non-transactional-promotional)
+  - [Scenario 2: Safaricom Transactional](#scenario-2-safaricom-transactional-otpalerts)
+  - [Scenario 3: Airtel](#scenario-3-airtel)
+  - [Scenario 4: Telkom](#scenario-4-telkom)
+  - [Scenario 5: Equitel](#scenario-5-equitel)
+  - [Scenario 6: CM / International](#scenario-6-cm--international)
+- [MNO Routing Summary](#mno-routing-summary)
+- [Rate Limiting](#rate-limiting)
+- [Priority Routing (EM-155)](#priority-routing-em-155)
+  - [Overview](#overview-1)
+  - [Enabling Priority Routing](#enabling-priority-routing)
+  - [Configuring Queue Weights](#configuring-queue-weights)
+  - [How Default Weights and Redis Interact](#how-default-weights-and-redis-interact)
+  - [Hot-Reload Weights at Runtime](#hot-reload-weights-at-runtime)
+  - [Transactional Fast-Path](#transactional-fast-path)
+  - [Starvation Prevention](#starvation-prevention)
+  - [Priority Metrics](#priority-metrics)
+  - [Priority Configuration Reference](#priority-configuration-reference)
+- [Retry Logic](#retry-logic)
+  - [Retry Flow](#retry-flow)
+  - [Retryable Conditions](#retryable-conditions)
+  - [Permanent Failure Conditions](#permanent-failure-conditions)
+- [Delivery Report (DLR) Handling](#delivery-report-dlr-handling)
+- [API Endpoints](#api-endpoints)
+  - [Health Check](#health-check)
+  - [Readiness Check](#readiness-check)
+  - [Metrics](#metrics)
+- [Configuration Reference](#configuration-reference)
+  - [Application Settings](#application-settings)
+  - [Redis Settings](#redis-settings)
+  - [RabbitMQ Settings](#rabbitmq-settings)
+- [Operational Procedures](#operational-procedures)
+  - [Starting the Service](#starting-the-service)
+  - [Graceful Shutdown](#graceful-shutdown)
+  - [Monitoring](#monitoring)
+  - [Troubleshooting](#troubleshooting)
+- [Migration from Legacy Services](#migration-from-legacy-services)
+  - [Key Differences](#key-differences)
+
+---
+
 ## Service Purpose
 
 The SMS MNO Gateway is responsible for:
@@ -424,6 +479,53 @@ PRIORITY_DEFAULT_QUEUE_WEIGHTS=TITANIC-KE_SMS_QUEUE:10,CONSUME_TO_MNO:5,SMS_MNO_
 4. **Zero latency when idle**: Credits accumulate, allowing instant burst processing
 5. **Fair under contention**: Higher weight = more credits = more throughput
 
+### How Default Weights and Redis Interact
+
+`PRIORITY_DEFAULT_WEIGHTS` is a **seed value** that populates Redis on first startup:
+
+```mermaid
+flowchart TD
+    START([Service Startup]) --> CHECK{Redis key<br/>exists?}
+
+    CHECK -->|No - Empty| WRITE[Write PRIORITY_DEFAULT_WEIGHTS<br/>to Redis]
+    CHECK -->|Yes - Has values| USE_EXISTING[Use existing Redis values<br/>Defaults ignored]
+
+    WRITE --> SOURCE[Redis is source of truth<br/>Hot-reloadable via Pub/Sub]
+    USE_EXISTING --> SOURCE
+
+    SOURCE --> READY([Priority routing ready])
+```
+
+**Behavior Matrix:**
+
+| Redis Key Exists? | `PRIORITY_DEFAULT_WEIGHTS` Set? | Result |
+|-------------------|--------------------------------|--------|
+| No | Yes | Defaults written to Redis, then used |
+| No | No | Empty weights (queues use `PRIORITY_DEFAULT_WEIGHT`) |
+| Yes | Yes | Redis values used, **defaults ignored** |
+| Yes | No | Redis values used |
+
+**Example:**
+
+```env
+PRIORITY_REDIS_WEIGHTS_KEY=sms:priority:queue_weights
+PRIORITY_DEFAULT_WEIGHTS=GOLD_QUEUE:10,STANDARD_QUEUE:1
+```
+
+On first startup with empty Redis:
+1. Service writes `{GOLD_QUEUE: 10, STANDARD_QUEUE: 1}` to Redis
+2. Log shows: `"Initializing priority weights in Redis with defaults"`
+3. Going forward, Redis is the source of truth
+
+Verify what got written:
+```bash
+redis-cli HGETALL sms:priority:queue_weights
+# 1) "GOLD_QUEUE"
+# 2) "10"
+# 3) "STANDARD_QUEUE"
+# 4) "1"
+```
+
 ### Hot-Reload Weights at Runtime
 
 Queue weights can be updated without restarting the service:
@@ -602,7 +704,57 @@ Response:
 GET /metrics
 ```
 
-Returns Prometheus-formatted metrics.
+Returns Prometheus-formatted metrics for scraping.
+
+**Usage:**
+
+```bash
+# View all metrics
+curl http://localhost:8080/metrics
+
+# Filter for SMS-specific metrics
+curl -s http://localhost:8080/metrics | grep emalify_sms
+```
+
+**Key Metrics:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `emalify_sms_messages_processed_total` | Counter | Messages processed by network and status |
+| `emalify_sms_send_latency_seconds` | Histogram | MNO send latency by network |
+| `emalify_sms_circuit_breaker_state` | Gauge | Circuit breaker state (0=closed, 1=open, 0.5=half-open) |
+| `emalify_sms_retries_total` | Counter | Retry attempts by network |
+| `emalify_sms_dead_letters_total` | Counter | Messages sent to dead letter queue |
+| `emalify_sms_priority_routed_total` | Counter | Messages routed by type (transactional/promotional) |
+| `emalify_sms_scheduler_processed_total` | Counter | Messages processed through WRR scheduler |
+| `emalify_sms_scheduler_weight` | Gauge | Current queue weights |
+| `emalify_sms_starvation_triggers_total` | Counter | Starvation prevention activations |
+
+**Prometheus Scrape Config:**
+
+```yaml
+scrape_configs:
+  - job_name: 'sms-mno-gateway'
+    static_configs:
+      - targets: ['sms-gateway:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+**Example Output:**
+
+```
+# HELP emalify_sms_messages_processed_total Total messages processed
+# TYPE emalify_sms_messages_processed_total counter
+emalify_sms_messages_processed_total{network="SAFARICOM",status="success"} 12543
+emalify_sms_messages_processed_total{network="SAFARICOM",status="failed"} 23
+emalify_sms_messages_processed_total{network="AIRTEL",status="success"} 4521
+
+# HELP emalify_sms_scheduler_weight Current queue weight
+# TYPE emalify_sms_scheduler_weight gauge
+emalify_sms_scheduler_weight{queue="GOLD_PARTNERS_QUEUE"} 10
+emalify_sms_scheduler_weight{queue="TITANIC-KE_SMS_QUEUE"} 1
+```
 
 ## Configuration Reference
 
