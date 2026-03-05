@@ -54,6 +54,7 @@ graph LR
 
 - **Multi-MNO Support**: Safaricom (SDP + SMPP), Airtel, Telkom, Equitel, CM International
 - **Transactional Routing**: Automatic SMPP routing for Safaricom transactional messages
+- **Priority Routing**: Credit-Based Weighted Round Robin with transactional fast-path (EM-155)
 - **Resilience**: Per-MNO circuit breakers, rate limiting, retry logic
 - **Observability**: Prometheus metrics, structured logging, health endpoints
 - **Reliability**: Manual queue acknowledgment ensures no message loss
@@ -101,9 +102,11 @@ Key environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+| `INPUT_QUEUES` | `TITANIC-KE_SMS_QUEUE,CONSUME_TO_MNO` | Comma-separated list of queues to consume |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `WORKER_COUNT` | `10` | Concurrent workers |
 | `LOG_LEVEL` | `info` | Log verbosity |
+| `PRIORITY_ROUTING_ENABLED` | `false` | Enable Credit-Based WRR priority routing |
 
 See [docs/usage.md](docs/usage.md#configuration-reference) for complete configuration reference.
 
@@ -266,16 +269,38 @@ go vet ./...
 
 Key metrics exposed:
 
-- `sms_messages_processed_total{network, status}` - Message counts
-- `sms_send_latency_seconds{network}` - Send latency histogram
-- `sms_circuit_breaker_state{network}` - Circuit breaker status
-- `sms_retries_total{network}` - Retry counts
-- `sms_dead_letters_total{network}` - Dead letter counts
+- `emalify_sms_messages_processed_total{network, status}` - Message counts
+- `emalify_sms_send_latency_seconds{network}` - Send latency histogram
+- `emalify_sms_circuit_breaker_state{network}` - Circuit breaker status
+- `emalify_sms_retries_total{network}` - Retry counts
+- `emalify_sms_dead_letters_total{network}` - Dead letter counts
+- `emalify_sms_priority_routed_total{type, queue}` - Priority routing counts
+- `emalify_sms_scheduler_weight{queue}` - Current queue weights
+- `emalify_sms_starvation_triggers_total{queue}` - Starvation prevention triggers
+
+```bash
+# View all metrics
+curl http://localhost:8080/metrics
+
+# Filter for SMS-specific metrics
+curl -s http://localhost:8080/metrics | grep emalify_sms
+```
+
+**Prometheus scrape config:**
+
+```yaml
+scrape_configs:
+  - job_name: 'sms-mno-gateway'
+    static_configs:
+      - targets: ['sms-gateway:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
 
 ### Health Checks
 
 ```bash
-# Health check
+# Health check (liveness)
 curl http://localhost:8080/health
 
 # Readiness check
@@ -348,6 +373,7 @@ This service addresses several issues from the legacy systems:
 | EM-147 | No observability | Prometheus metrics |
 | EM-148 | Cascading MNO failures | Per-MNO circuit breakers |
 | EM-149 | Permanent failures retried | Proper DLQ routing |
+| EM-155 | No message prioritization | Credit-Based WRR scheduler with transactional fast-path |
 
 ## License
 

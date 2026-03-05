@@ -4,6 +4,61 @@
 
 This document describes how the `emalify-sms-mno-gateway` service operates, including queue configurations, MNO routing scenarios, and message handling.
 
+## Table of Contents
+
+- [Service Purpose](#service-purpose)
+- [Queue Configuration](#queue-configuration)
+  - [Input Queues](#input-queues)
+  - [Output Queues](#output-queues)
+- [Message Format](#message-format)
+  - [Input Message Schema](#input-message-schema)
+  - [Output Message Schema](#output-message-schema)
+- [MNO Configuration](#mno-configuration)
+  - [Supported Networks](#supported-networks)
+  - [Network Prefixes (Kenya)](#network-prefixes-kenya)
+  - [MSISDN Normalization](#msisdn-normalization)
+- [MNO Routing Scenarios](#mno-routing-scenarios)
+  - [Scenario 1: Safaricom Non-Transactional](#scenario-1-safaricom-non-transactional-promotional)
+  - [Scenario 2: Safaricom Transactional](#scenario-2-safaricom-transactional-otpalerts)
+  - [Scenario 3: Airtel](#scenario-3-airtel)
+  - [Scenario 4: Telkom](#scenario-4-telkom)
+  - [Scenario 5: Equitel](#scenario-5-equitel)
+  - [Scenario 6: CM / International](#scenario-6-cm--international)
+- [MNO Routing Summary](#mno-routing-summary)
+- [Rate Limiting](#rate-limiting)
+- [Priority Routing (EM-155)](#priority-routing-em-155)
+  - [Overview](#overview-1)
+  - [Enabling Priority Routing](#enabling-priority-routing)
+  - [Configuring Queue Weights](#configuring-queue-weights)
+  - [How Default Weights and Redis Interact](#how-default-weights-and-redis-interact)
+  - [Hot-Reload Weights at Runtime](#hot-reload-weights-at-runtime)
+  - [Transactional Fast-Path](#transactional-fast-path)
+  - [Starvation Prevention](#starvation-prevention)
+  - [Priority Metrics](#priority-metrics)
+  - [Priority Configuration Reference](#priority-configuration-reference)
+- [Retry Logic](#retry-logic)
+  - [Retry Flow](#retry-flow)
+  - [Retryable Conditions](#retryable-conditions)
+  - [Permanent Failure Conditions](#permanent-failure-conditions)
+- [Delivery Report (DLR) Handling](#delivery-report-dlr-handling)
+- [API Endpoints](#api-endpoints)
+  - [Health Check](#health-check)
+  - [Readiness Check](#readiness-check)
+  - [Metrics](#metrics)
+- [Configuration Reference](#configuration-reference)
+  - [Application Settings](#application-settings)
+  - [Redis Settings](#redis-settings)
+  - [RabbitMQ Settings](#rabbitmq-settings)
+- [Operational Procedures](#operational-procedures)
+  - [Starting the Service](#starting-the-service)
+  - [Graceful Shutdown](#graceful-shutdown)
+  - [Monitoring](#monitoring)
+  - [Troubleshooting](#troubleshooting)
+- [Migration from Legacy Services](#migration-from-legacy-services)
+  - [Key Differences](#key-differences)
+
+---
+
 ## Service Purpose
 
 The SMS MNO Gateway is responsible for:
@@ -356,6 +411,203 @@ Each network has configured rate limits to prevent overwhelming MNO APIs:
 
 When rate limited, messages are marked as retryable and sent to the retry queue.
 
+## Priority Routing (EM-155)
+
+When enabled, the priority routing system separates transactional and promotional messages for optimal delivery using **Credit-Based Weighted Round Robin (WRR)**.
+
+### Overview
+
+```mermaid
+flowchart LR
+    subgraph "Input"
+        MSG[Messages]
+    end
+
+    subgraph "Message Router"
+        CHECK{packageId?}
+    end
+
+    subgraph "Processing Paths"
+        TX[Transactional Handler<br/>Fast-Path]
+        WRR[Priority Scheduler<br/>Credit-Based WRR]
+    end
+
+    MSG --> CHECK
+    CHECK -->|TRANSACTIONAL| TX
+    CHECK -->|Other| WRR
+
+    TX --> MNO[MNO Senders]
+    WRR --> MNO
+```
+
+### Enabling Priority Routing
+
+Set `PRIORITY_ROUTING_ENABLED=true` in your `.env` file:
+
+```env
+PRIORITY_ROUTING_ENABLED=true
+PRIORITY_REDIS_WEIGHTS_KEY=sms:priority:weights
+PRIORITY_DEFAULT_WEIGHT=1
+PRIORITY_TRANSACTIONAL_WORKERS=5
+
+# Credit-Based WRR Configuration
+PRIORITY_CREDIT_MULTIPLIER=10       # Credits per weight unit (capacity = weight × multiplier)
+PRIORITY_REFILL_PERIOD_MS=100       # Credit refill interval in milliseconds
+PRIORITY_MAX_STARVATION_AGE_SEC=10  # Max seconds before starvation prevention
+```
+
+### Configuring Queue Weights
+
+Higher weight queues receive proportionally more credits and processing capacity:
+
+```env
+# Format: queue1:weight1,queue2:weight2,...
+PRIORITY_DEFAULT_QUEUE_WEIGHTS=TITANIC-KE_SMS_QUEUE:10,CONSUME_TO_MNO:5,SMS_MNO_GATEWAY_QUEUE:1
+```
+
+| Queue | Weight | Credit Capacity | Refill Rate | Approx Share |
+|-------|--------|-----------------|-------------|--------------|
+| TITANIC-KE_SMS_QUEUE | 10 | 100 credits | +10/tick | ~62.5% |
+| CONSUME_TO_MNO | 5 | 50 credits | +5/tick | ~31.25% |
+| SMS_MNO_GATEWAY_QUEUE | 1 | 10 credits | +1/tick | ~6.25% |
+
+**How Credit-Based WRR Works:**
+
+1. Each queue has a credit channel with capacity = `weight × creditMultiplier`
+2. Processing a batch requires acquiring one credit from the queue's channel
+3. A background goroutine refills credits every `refillPeriod` at rate = `weight` credits/tick
+4. **Zero latency when idle**: Credits accumulate, allowing instant burst processing
+5. **Fair under contention**: Higher weight = more credits = more throughput
+
+### How Default Weights and Redis Interact
+
+`PRIORITY_DEFAULT_WEIGHTS` is a **seed value** that populates Redis on first startup:
+
+```mermaid
+flowchart TD
+    START([Service Startup]) --> CHECK{Redis key<br/>exists?}
+
+    CHECK -->|No - Empty| WRITE[Write PRIORITY_DEFAULT_WEIGHTS<br/>to Redis]
+    CHECK -->|Yes - Has values| USE_EXISTING[Use existing Redis values<br/>Defaults ignored]
+
+    WRITE --> SOURCE[Redis is source of truth<br/>Hot-reloadable via Pub/Sub]
+    USE_EXISTING --> SOURCE
+
+    SOURCE --> READY([Priority routing ready])
+```
+
+**Behavior Matrix:**
+
+| Redis Key Exists? | `PRIORITY_DEFAULT_WEIGHTS` Set? | Result |
+|-------------------|--------------------------------|--------|
+| No | Yes | Defaults written to Redis, then used |
+| No | No | Empty weights (queues use `PRIORITY_DEFAULT_WEIGHT`) |
+| Yes | Yes | Redis values used, **defaults ignored** |
+| Yes | No | Redis values used |
+
+**Example:**
+
+```env
+PRIORITY_REDIS_WEIGHTS_KEY=sms:priority:queue_weights
+PRIORITY_DEFAULT_WEIGHTS=GOLD_QUEUE:10,STANDARD_QUEUE:1
+```
+
+On first startup with empty Redis:
+1. Service writes `{GOLD_QUEUE: 10, STANDARD_QUEUE: 1}` to Redis
+2. Log shows: `"Initializing priority weights in Redis with defaults"`
+3. Going forward, Redis is the source of truth
+
+Verify what got written:
+```bash
+redis-cli HGETALL sms:priority:queue_weights
+# 1) "GOLD_QUEUE"
+# 2) "10"
+# 3) "STANDARD_QUEUE"
+# 4) "1"
+```
+
+### Hot-Reload Weights at Runtime
+
+Queue weights can be updated without restarting the service:
+
+```bash
+# Update a single queue weight
+redis-cli HSET sms:priority:weights TITANIC-KE_SMS_QUEUE 20
+
+# Update multiple weights
+redis-cli HMSET sms:priority:weights \
+    TITANIC-KE_SMS_QUEUE 20 \
+    CONSUME_TO_MNO 10 \
+    SMS_MNO_GATEWAY_QUEUE 2
+
+# Notify the service of changes
+redis-cli PUBLISH sms:priority:weights:notifications weights_updated
+
+# View current weights
+redis-cli HGETALL sms:priority:weights
+```
+
+### Transactional Fast-Path
+
+Messages with `packageId="TRANSACTIONAL"` bypass the WRR scheduler entirely:
+
+- **Dedicated worker pool**: Configurable via `PRIORITY_TRANSACTIONAL_WORKERS` (default: 5)
+- **No credit requirements**: Processed immediately by available workers
+- **Separate from promotional**: Won't be delayed by promotional traffic
+- **Synchronous batch processing**: `ProcessBatch()` completes before delivery ack
+
+### Starvation Prevention
+
+Low-priority queues are guaranteed minimum processing even under heavy contention:
+
+```env
+# Maximum time (seconds) a queue can go without processing before bypass
+PRIORITY_MAX_STARVATION_AGE_SEC=10
+```
+
+If a queue hasn't processed any messages for longer than `maxStarvationAge`:
+- The credit check is bypassed
+- Processing proceeds immediately
+- A `starvation_triggers` metric is incremented
+- The `lastProcessed` timestamp is updated
+
+This ensures that even weight=1 queues don't starve indefinitely when competing with weight=10 queues.
+
+### Priority Metrics
+
+Monitor priority routing via Prometheus:
+
+| Metric | Description |
+|--------|-------------|
+| `emalify_sms_priority_messages_routed_total{type,queue}` | Messages routed by type |
+| `emalify_sms_priority_transactional_processed_total{status}` | Transactional processing |
+| `emalify_sms_priority_transactional_queue_depth` | Transactional queue depth |
+| `emalify_sms_priority_scheduler_processed_total{queue}` | Scheduler processing per queue |
+| `emalify_sms_priority_scheduler_weight{queue}` | Current queue weights |
+| `emalify_sms_priority_starvation_triggers_total{queue}` | Starvation prevention triggers |
+
+### Priority Configuration Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PRIORITY_ROUTING_ENABLED` | false | Enable priority routing with Credit-Based WRR |
+| `PRIORITY_REDIS_WEIGHTS_KEY` | sms:priority:weights | Redis hash key for queue weights |
+| `PRIORITY_DEFAULT_QUEUE_WEIGHTS` | (see below) | Initial queue weights (format: `QUEUE1:10,QUEUE2:5`) |
+| `PRIORITY_DEFAULT_WEIGHT` | 1 | Weight for unconfigured queues |
+| `PRIORITY_TRANSACTIONAL_WORKERS` | 5 | Dedicated workers for transactional fast-path |
+| `PRIORITY_CREDIT_MULTIPLIER` | 10 | Credits per weight unit (capacity = weight × multiplier) |
+| `PRIORITY_REFILL_PERIOD_MS` | 100 | Credit refill interval in milliseconds |
+| `PRIORITY_MAX_STARVATION_AGE_SEC` | 10 | Max seconds without processing before starvation bypass |
+
+**Configuration Details:**
+
+| Parameter | Formula/Behavior | Example |
+|-----------|------------------|---------|
+| Credit Capacity | `weight × creditMultiplier` | weight=10, multiplier=10 → 100 credits |
+| Refill Rate | `weight` credits per `refillPeriod` | weight=10, period=100ms → 100 credits/sec |
+| Throughput Ratio | Approximately proportional to weight | weight=10 vs weight=1 → ~10× throughput |
+| Starvation Threshold | Process immediately if idle > `maxStarvationAge` | After 10s idle → bypass credits |
+
 ## Retry Logic
 
 ### Retry Flow
@@ -452,7 +704,57 @@ Response:
 GET /metrics
 ```
 
-Returns Prometheus-formatted metrics.
+Returns Prometheus-formatted metrics for scraping.
+
+**Usage:**
+
+```bash
+# View all metrics
+curl http://localhost:8080/metrics
+
+# Filter for SMS-specific metrics
+curl -s http://localhost:8080/metrics | grep emalify_sms
+```
+
+**Key Metrics:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `emalify_sms_messages_processed_total` | Counter | Messages processed by network and status |
+| `emalify_sms_send_latency_seconds` | Histogram | MNO send latency by network |
+| `emalify_sms_circuit_breaker_state` | Gauge | Circuit breaker state (0=closed, 1=open, 0.5=half-open) |
+| `emalify_sms_retries_total` | Counter | Retry attempts by network |
+| `emalify_sms_dead_letters_total` | Counter | Messages sent to dead letter queue |
+| `emalify_sms_priority_routed_total` | Counter | Messages routed by type (transactional/promotional) |
+| `emalify_sms_scheduler_processed_total` | Counter | Messages processed through WRR scheduler |
+| `emalify_sms_scheduler_weight` | Gauge | Current queue weights |
+| `emalify_sms_starvation_triggers_total` | Counter | Starvation prevention activations |
+
+**Prometheus Scrape Config:**
+
+```yaml
+scrape_configs:
+  - job_name: 'sms-mno-gateway'
+    static_configs:
+      - targets: ['sms-gateway:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+**Example Output:**
+
+```
+# HELP emalify_sms_messages_processed_total Total messages processed
+# TYPE emalify_sms_messages_processed_total counter
+emalify_sms_messages_processed_total{network="SAFARICOM",status="success"} 12543
+emalify_sms_messages_processed_total{network="SAFARICOM",status="failed"} 23
+emalify_sms_messages_processed_total{network="AIRTEL",status="success"} 4521
+
+# HELP emalify_sms_scheduler_weight Current queue weight
+# TYPE emalify_sms_scheduler_weight gauge
+emalify_sms_scheduler_weight{queue="GOLD_PARTNERS_QUEUE"} 10
+emalify_sms_scheduler_weight{queue="TITANIC-KE_SMS_QUEUE"} 1
+```
 
 ## Configuration Reference
 
@@ -541,3 +843,4 @@ This service replaces:
 5. **Circuit breakers**: Per-MNO failure isolation (EM-148 fix)
 6. **DLQ routing**: Permanent failures go to DLQ (EM-149 fix)
 7. **Metrics**: Prometheus observability (EM-147 fix)
+8. **Priority routing**: Credit-Based WRR scheduler with transactional fast-path (EM-155)
