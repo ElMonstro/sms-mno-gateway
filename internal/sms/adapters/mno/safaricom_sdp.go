@@ -21,6 +21,7 @@ import (
 type SafaricomSDPSender struct {
 	authURL        string
 	sendURL        string
+	authUsername   string
 	username       string
 	password       string
 	dlrURL         string
@@ -37,6 +38,7 @@ type SafaricomSDPSender struct {
 type SDPConfig struct {
 	AuthURL        string
 	SendURL        string
+	AuthUsername   string
 	Username       string
 	Password       string
 	DLRURL         string
@@ -80,9 +82,15 @@ type SDPSMSRecord struct {
 
 // NewSafaricomSDPSender creates a new Safaricom SDP sender
 func NewSafaricomSDPSender(cfg *SDPConfig) *SafaricomSDPSender {
+	authUsername := cfg.AuthUsername
+	if authUsername == "" {
+		authUsername = cfg.Username
+	}
+
 	return &SafaricomSDPSender{
 		authURL:        cfg.AuthURL,
 		sendURL:        cfg.SendURL,
+		authUsername:   authUsername,
 		username:       cfg.Username,
 		password:       cfg.Password,
 		dlrURL:         cfg.DLRURL,
@@ -270,7 +278,7 @@ func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 // fetchToken fetches a new authentication token from SDP
 func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 	authReq := SDPAuthRequest{
-		Username: s.username,
+		Username: s.authUsername,
 		Password: s.password,
 	}
 
