@@ -197,6 +197,12 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 		return domain.NewPermanentResult(msg, err, time.Since(start))
 	}
 
+	s.log.WithFields(map[string]interface{}{
+		"correlator": msg.Correlator,
+		"url":        s.sendURL,
+		"payload":    string(payloadBytes),
+	}).Debug("SDP send request payload")
+
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sendURL, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -206,6 +212,12 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Authorization", "Bearer "+token)
+
+	s.log.WithFields(map[string]interface{}{
+		"correlator":   msg.Correlator,
+		"content_type": req.Header.Get("Content-Type"),
+		"auth_scheme":  "Bearer",
+	}).Debug("SDP send request headers")
 
 	// Execute request
 	resp, err := s.httpClient.Do(req)
@@ -228,9 +240,11 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	// Check response status
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		s.log.WithFields(map[string]interface{}{
-			"network":    domain.NetworkSafaricom,
-			"correlator": msg.Correlator,
-			"latency_ms": latency.Milliseconds(),
+			"network":     domain.NetworkSafaricom,
+			"correlator":  msg.Correlator,
+			"status_code": resp.StatusCode,
+			"response":    responseStr,
+			"latency_ms":  latency.Milliseconds(),
 		}).Info("Message sent successfully via SDP")
 		return domain.NewSuccessResult(msg, responseStr, latency)
 	}
