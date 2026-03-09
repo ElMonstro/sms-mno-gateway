@@ -264,6 +264,7 @@ sequenceDiagram
 SDP_AUTH_URL=https://dsvc2.safaricom.com:9480/api/auth/login
 SDP_SEND_URL=https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms
 SDP_USERNAME=roamtechapi
+SDP_USER=roamtech
 SDP_PASSWORD=<secret>
 SDP_DLR_URL=https://smsdlr.emalify.com/save
 SDP_TOKEN_KEY=SDP_TOKEN_KEY

@@ -74,6 +74,7 @@ type MNOConfig struct {
 type SDPConfig struct {
 	AuthURL  string
 	SendURL  string
+	AuthUser string
 	Username string
 	Password string
 	DLRURL   string
@@ -164,7 +165,8 @@ func Load() *Config {
 			SafaricomSDP: SDPConfig{
 				AuthURL:  getEnv("SDP_AUTH_URL", "https://dsvc2.safaricom.com:9480/api/auth/login"),
 				SendURL:  getEnv("SDP_SEND_URL", "https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms"),
-				Username: getEnv("SDP_USERNAME", ""),
+				AuthUser: getEnv("SDP_USERNAME", getEnv("SDP_USER", "")),
+				Username: getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
 				Password: getEnv("SDP_PASSWORD", ""),
 				DLRURL:   getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
 				TokenKey: getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),

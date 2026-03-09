@@ -49,6 +49,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 		safaricomSDP: NewSafaricomSDPSender(&SDPConfig{
 			AuthURL:        mnoCfg.SafaricomSDP.AuthURL,
 			SendURL:        mnoCfg.SafaricomSDP.SendURL,
+				AuthUsername:   mnoCfg.SafaricomSDP.AuthUser,
 			Username:       mnoCfg.SafaricomSDP.Username,
 			Password:       mnoCfg.SafaricomSDP.Password,
 			DLRURL:         mnoCfg.SafaricomSDP.DLRURL,

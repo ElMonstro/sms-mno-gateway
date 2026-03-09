@@ -1293,7 +1293,8 @@ flowchart LR
 |----------|---------|-------------|
 | `SDP_AUTH_URL` | https://dsvc2.safaricom.com:9480/api/auth/login | OAuth token endpoint |
 | `SDP_SEND_URL` | https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms | Send SMS endpoint |
-| `SDP_USERNAME` | (required) | SDP API username |
+| `SDP_USERNAME` | (required) | SDP auth username for token endpoint |
+| `SDP_USER` | (required) | SDP payload userName for send endpoint |
 | `SDP_PASSWORD` | (required) | SDP API password |
 | `SDP_DLR_URL` | https://smsdlr.emalify.com/save | DLR callback URL |
 | `SDP_TOKEN_KEY` | SDP_TOKEN_KEY | Redis key for cached token |
@@ -1423,7 +1424,8 @@ PRIORITY_MAX_STARVATION_AGE_SEC=10
 # Safaricom SDP (promotional messages)
 SDP_AUTH_URL=https://dsvc2.safaricom.com:9480/api/auth/login
 SDP_SEND_URL=https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms
-SDP_USERNAME=your_username
+SDP_USERNAME=your_auth_username
+SDP_USER=your_username
 SDP_PASSWORD=your_password
 
 # Safaricom SMPP (transactional messages)
