@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/circuitbreaker"
@@ -71,6 +72,7 @@ type SDPSendRequest struct {
 type SDPSMSRecord struct {
 	UserName          string `json:"userName"`
 	Channel           string `json:"channel"`
+	PackageID         uint64 `json:"package_id"`
 	OA                string `json:"oa"`
 	MSISDN            string `json:"msisdn"`
 	Message           string `json:"message"`
@@ -152,12 +154,26 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	}
 
 	// Build request payload
+	packageID := uint64(0)
+	if msg.PackageID != "" {
+		parsedPackageID, parseErr := strconv.ParseUint(msg.PackageID, 10, 64)
+		if parseErr != nil {
+			s.log.WithFields(map[string]interface{}{
+				"correlator": msg.Correlator,
+				"package_id": msg.PackageID,
+			}).WithError(parseErr).Warn("Invalid package_id, defaulting to 0 for SDP request")
+		} else {
+			packageID = parsedPackageID
+		}
+	}
+
 	payload := SDPSendRequest{
 		TimeStamp: time.Now().Unix(),
 		DataSet: []SDPSMSRecord{
 			{
 				UserName:          s.username,
 				Channel:           "sms",
+				PackageID:         packageID,
 				OA:                msg.Sender,
 				MSISDN:            msg.NormalizeMSISDN(),
 				Message:           msg.Content,
