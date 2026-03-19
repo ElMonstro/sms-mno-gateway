@@ -109,7 +109,24 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 		"queue":      queueName,
 	}).Debug("Publishing result")
 
-	return p.Publish(ctx, queueName, result.Message)
+	if err := p.Publish(ctx, queueName, result.Message); err != nil {
+		return err
+	}
+
+	// For permanent failures, also publish to SAVE_TO_DB so the record is
+	// persisted with status FAILED TO SEND, mirroring how successful sends
+	// are recorded.
+	if result.Type == domain.ResultPermanent {
+		p.log.WithFields(map[string]interface{}{
+			"correlator": result.Message.Correlator,
+			"queue":      p.queues.SaveToDBQueue,
+		}).Debug("Publishing permanent failure to SAVE_TO_DB")
+		if err := p.Publish(ctx, p.queues.SaveToDBQueue, result.Message); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // PublishBatchResults publishes batch results to appropriate queues
@@ -130,10 +147,14 @@ func (p *Publisher) PublishBatchResults(ctx context.Context, results *domain.Bat
 		}
 	}
 
-	// Publish failed messages to DLQ
+	// Publish failed messages to DLQ and SAVE_TO_DB (with status FAILED TO SEND)
 	for _, result := range results.Failed {
 		if err := p.Publish(ctx, p.queues.DeadLetterQueue, result.Message); err != nil {
 			p.log.WithError(err).Error("Failed to publish failed message to DLQ")
+			return err
+		}
+		if err := p.Publish(ctx, p.queues.SaveToDBQueue, result.Message); err != nil {
+			p.log.WithError(err).Error("Failed to publish failed message to SAVE_TO_DB")
 			return err
 		}
 	}
