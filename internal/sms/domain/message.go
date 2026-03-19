@@ -14,6 +14,7 @@ type Message struct {
 	Sender      string    `json:"sender"`
 	PackageID   string    `json:"packageId"`
 	Status      string    `json:"status"`
+	Description string    `json:"description,omitempty"`
 	CreatedAt   string    `json:"createdAt"`
 	RetryCount  int       `json:"retryCount,omitempty"`
 	LastError   string    `json:"lastError,omitempty"`
@@ -78,12 +79,14 @@ func (m *Message) Validate() error {
 // SetStatus updates the message status
 func (m *Message) SetStatus(status string) {
 	m.Status = status
+	m.Description = "success"
 	m.ProcessedAt = time.Now()
 }
 
 // SetError updates the message with error information
 func (m *Message) SetError(err error) {
 	m.LastError = err.Error()
+	m.Description = err.Error()
 	m.Status = StatusFailed
 }
 
@@ -107,6 +110,7 @@ func (m *Message) Clone() *Message {
 		Sender:      m.Sender,
 		PackageID:   m.PackageID,
 		Status:      m.Status,
+		Description: m.Description,
 		CreatedAt:   m.CreatedAt,
 		RetryCount:  m.RetryCount,
 		LastError:   m.LastError,
