@@ -122,6 +122,9 @@ func TestSafaricomSDPSender_Send_Success(t *testing.T) {
 			if req.DataSet[0].MSISDN != "254722123456" {
 				t.Errorf("Expected MSISDN 254722123456, got %s", req.DataSet[0].MSISDN)
 			}
+			if req.DataSet[0].PackageID != 6179 {
+				t.Errorf("Expected package_id 6179, got %d", req.DataSet[0].PackageID)
+			}
 
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"status":"success"}`))
@@ -151,6 +154,7 @@ func TestSafaricomSDPSender_Send_Success(t *testing.T) {
 		MSISDN:     "254722123456",
 		NetworkRaw: "SAFARICOM",
 		Sender:     "TestSender",
+		PackageID:  "6179",
 	}
 
 	result := sender.Send(context.Background(), msg)

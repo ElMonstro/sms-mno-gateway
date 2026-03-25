@@ -16,6 +16,7 @@ type Config struct {
 	Queues    QueuesConfig
 	MNO       MNOConfig
 	RateLimit RateLimitConfig
+	Priority  PriorityConfig
 }
 
 // AppConfig holds application-level configuration
@@ -64,6 +65,7 @@ type MNOConfig struct {
 	SafaricomSDP  SDPConfig
 	SafaricomSMPP SMPPConfig
 	Airtel        SMPPConfig
+	AirtelPromo   SMPPConfig
 	Telkom        SMPPConfig
 	Equitel       SMPPConfig
 	CM            SMPPConfig
@@ -73,6 +75,7 @@ type MNOConfig struct {
 type SDPConfig struct {
 	AuthURL  string
 	SendURL  string
+	AuthUser string
 	AuthUser string
 	Username string
 	Password string
@@ -98,6 +101,35 @@ type RateLimitConfig struct {
 	Equitel   int
 	CM        int
 	Default   int
+}
+
+// PriorityConfig holds message prioritization settings
+type PriorityConfig struct {
+	// Enabled turns on priority scheduling
+	Enabled bool
+
+	// RedisWeightsKey is the Redis key for queue weights (hash)
+	RedisWeightsKey string
+
+	// DefaultQueueWeights are initial weights if Redis is empty
+	// Format from env: "QUEUE1:10,QUEUE2:5,QUEUE3:1"
+	DefaultQueueWeights map[string]int
+
+	// DefaultWeight for queues not explicitly configured
+	DefaultWeight int
+
+	// TransactionalWorkers is the number of dedicated workers for transactional fast-path
+	TransactionalWorkers int
+
+	// Credit-Based Weighted Round Robin (WRR) Configuration
+	// CreditMultiplier determines credits per weight unit (e.g., 10 means weight=5 gets 50 credits)
+	CreditMultiplier int
+
+	// RefillPeriodMs is the credit refill interval in milliseconds
+	RefillPeriodMs int
+
+	// MaxStarvationAgeSec is the max seconds without processing before starvation prevention kicks in
+	MaxStarvationAgeSec int
 }
 
 // Load loads configuration from environment variables
@@ -135,7 +167,7 @@ func Load() *Config {
 			SafaricomSDP: SDPConfig{
 				AuthURL:  getEnv("SDP_AUTH_URL", "https://dsvc2.safaricom.com:9480/api/auth/login"),
 				SendURL:  getEnv("SDP_SEND_URL", "https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms"),
-				AuthUser: getEnv("SDP_USERNAME", ""),
+				AuthUser: getEnv("SDP_USERNAME", getEnv("SDP_USER", "")),
 				Username: getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
 				Password: getEnv("SDP_PASSWORD", ""),
 				DLRURL:   getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
@@ -155,6 +187,13 @@ func Load() *Config {
 				Username: getEnv("AIRTEL_SMPP_USERNAME", ""),
 				Password: getEnv("AIRTEL_SMPP_PASSWORD", ""),
 				DLRURL:   getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+			},
+			AirtelPromo: SMPPConfig{
+				URL:      getEnv("AIRTEL_SMPP_URL_PROMO", getEnv("AIRTEL_SMPP_URL", "http://10.0.0.88:14013/cgi-bin/sendsms")),
+				SMSC:     getEnv("AIRTEL_SMPP_SMSC_PROMO", getEnv("AIRTEL_SMPP_SMSC", "AIRTEL")),
+				Username: getEnv("AIRTEL_SMPP_USERNAME_PROMO", getEnv("AIRTEL_SMPP_USERNAME", "")),
+				Password: getEnv("AIRTEL_SMPP_PASSWORD_PROMO", getEnv("AIRTEL_SMPP_PASSWORD", "")),
+				DLRURL:   getEnv("AIRTEL_SMPP_DLR_URL_PROMO", getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
 			},
 			Telkom: SMPPConfig{
 				URL:      getEnv("TELKOM_SMPP_URL", "http://34.77.25.98:14013/cgi-bin/sendsms"),
@@ -185,6 +224,24 @@ func Load() *Config {
 			Equitel:   getEnvAsInt("RATE_LIMIT_EQUITEL", 20),
 			CM:        getEnvAsInt("RATE_LIMIT_CM", 20),
 			Default:   getEnvAsInt("RATE_LIMIT_DEFAULT", 20),
+		},
+		Priority: PriorityConfig{
+			Enabled:         getEnvAsBool("PRIORITY_ROUTING_ENABLED", false),
+			RedisWeightsKey: getEnv("PRIORITY_REDIS_WEIGHTS_KEY", "sms:priority:queue_weights"),
+			DefaultQueueWeights: getEnvAsQueueWeights("PRIORITY_DEFAULT_WEIGHTS", map[string]int{
+				"GOLD_PARTNERS_QUEUE":   10,
+				"BETIKA_GOLD":           10,
+				"PEPETA_GOLD":           10,
+				"TITANIC-KE_SMS_QUEUE":  1,
+				"CONSUME_TO_MNO":        1,
+				"SMS_MNO_GATEWAY_QUEUE": 1,
+			}),
+			DefaultWeight:        getEnvAsInt("PRIORITY_DEFAULT_WEIGHT", 1),
+			TransactionalWorkers: getEnvAsInt("PRIORITY_TRANSACTIONAL_WORKERS", 5),
+			// Credit-Based WRR configuration
+			CreditMultiplier:    getEnvAsInt("PRIORITY_CREDIT_MULTIPLIER", 10),      // 10 credits per weight unit
+			RefillPeriodMs:      getEnvAsInt("PRIORITY_REFILL_PERIOD_MS", 100),      // 100ms refill interval
+			MaxStarvationAgeSec: getEnvAsInt("PRIORITY_MAX_STARVATION_AGE_SEC", 10), // 10 seconds
 		},
 	}
 }
@@ -237,6 +294,27 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolVal, err := strconv.ParseBool(value); err == nil {
 			return boolVal
+		}
+	}
+	return defaultValue
+}
+
+// getEnvAsQueueWeights parses queue weights from env var format: "QUEUE1:10,QUEUE2:5"
+func getEnvAsQueueWeights(key string, defaultValue map[string]int) map[string]int {
+	if value, exists := os.LookupEnv(key); exists && value != "" {
+		result := make(map[string]int)
+		pairs := strings.Split(value, ",")
+		for _, pair := range pairs {
+			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+			if len(parts) == 2 {
+				queueName := strings.TrimSpace(parts[0])
+				if weight, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && queueName != "" {
+					result[queueName] = weight
+				}
+			}
+		}
+		if len(result) > 0 {
+			return result
 		}
 	}
 	return defaultValue

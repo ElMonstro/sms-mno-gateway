@@ -326,9 +326,43 @@ func (m *MockMetrics) ObserveHTTPRequestDuration(method, path string, statusCode
 }
 func (m *MockMetrics) SetHealthy(component string, healthy bool) {}
 
+func (m *MockMetrics) IncPriorityRouted(messageType, queue string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "priority_routed_" + messageType + "_" + queue
+	m.ProcessedCounts[key]++
+}
+
+func (m *MockMetrics) IncTransactionalProcessed(status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "transactional_" + status
+	m.ProcessedCounts[key]++
+}
+
+func (m *MockMetrics) SetTransactionalQueueDepth(depth int) {}
+
+func (m *MockMetrics) IncSchedulerProcessed(queue string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "scheduler_" + queue
+	m.ProcessedCounts[key]++
+}
+
+func (m *MockMetrics) SetSchedulerWeight(queue string, weight int) {}
+
+func (m *MockMetrics) IncStarvationTriggers(queue string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "starvation_" + queue
+	m.ProcessedCounts[key]++
+}
+
 // MockDelivery is a mock implementation of ports.Delivery
 type MockDelivery struct {
 	Data       []byte
+	MockMsgs   []*domain.Message
+	Tag        uint64
 	AckCalled  bool
 	NackParam  bool
 	NackCalled bool
@@ -337,11 +371,28 @@ type MockDelivery struct {
 func NewMockDelivery(data []byte) *MockDelivery {
 	return &MockDelivery{
 		Data: data,
+		Tag:  1,
+	}
+}
+
+// NewMockDeliveryWithMessages creates a mock delivery with pre-parsed messages
+func NewMockDeliveryWithMessages(msgs []*domain.Message) *MockDelivery {
+	return &MockDelivery{
+		MockMsgs: msgs,
+		Tag:      1,
 	}
 }
 
 func (d *MockDelivery) Body() []byte {
 	return d.Data
+}
+
+func (d *MockDelivery) Messages() []*domain.Message {
+	return d.MockMsgs
+}
+
+func (d *MockDelivery) DeliveryTag() uint64 {
+	return d.Tag
 }
 
 func (d *MockDelivery) Ack() error {

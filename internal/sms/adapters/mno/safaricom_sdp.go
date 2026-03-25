@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/circuitbreaker"
@@ -73,6 +74,7 @@ type SDPSendRequest struct {
 type SDPSMSRecord struct {
 	UserName          string `json:"userName"`
 	Channel           string `json:"channel"`
+	PackageID         uint64 `json:"package_id"`
 	OA                string `json:"oa"`
 	MSISDN            string `json:"msisdn"`
 	Message           string `json:"message"`
@@ -160,12 +162,26 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	}
 
 	// Build request payload
+	packageID := uint64(0)
+	if msg.PackageID != "" {
+		parsedPackageID, parseErr := strconv.ParseUint(msg.PackageID, 10, 64)
+		if parseErr != nil {
+			s.log.WithFields(map[string]interface{}{
+				"correlator": msg.Correlator,
+				"package_id": msg.PackageID,
+			}).WithError(parseErr).Warn("Invalid package_id, defaulting to 0 for SDP request")
+		} else {
+			packageID = parsedPackageID
+		}
+	}
+
 	payload := SDPSendRequest{
 		TimeStamp: time.Now().Unix(),
 		DataSet: []SDPSMSRecord{
 			{
 				UserName:          s.username,
 				Channel:           "sms",
+				PackageID:         packageID,
 				OA:                msg.Sender,
 				MSISDN:            msg.NormalizeMSISDN(),
 				Message:           msg.Content,
@@ -181,6 +197,12 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 		return domain.NewPermanentResult(msg, err, time.Since(start))
 	}
 
+	s.log.WithFields(map[string]interface{}{
+		"correlator": msg.Correlator,
+		"url":        s.sendURL,
+		"payload":    string(payloadBytes),
+	}).Debug("SDP send request payload")
+
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sendURL, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -190,6 +212,12 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Authorization", "Bearer "+token)
+
+	s.log.WithFields(map[string]interface{}{
+		"correlator":   msg.Correlator,
+		"content_type": req.Header.Get("Content-Type"),
+		"auth_scheme":  "Bearer",
+	}).Debug("SDP send request headers")
 
 	// Execute request
 	resp, err := s.httpClient.Do(req)
@@ -212,9 +240,11 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	// Check response status
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		s.log.WithFields(map[string]interface{}{
-			"network":    domain.NetworkSafaricom,
-			"correlator": msg.Correlator,
-			"latency_ms": latency.Milliseconds(),
+			"network":     domain.NetworkSafaricom,
+			"correlator":  msg.Correlator,
+			"status_code": resp.StatusCode,
+			"response":    responseStr,
+			"latency_ms":  latency.Milliseconds(),
 		}).Info("Message sent successfully via SDP")
 		return domain.NewSuccessResult(msg, responseStr, latency)
 	}
@@ -287,6 +317,13 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to marshal auth request: %w", err)
 	}
 
+	s.log.WithFields(map[string]interface{}{
+		"url":          s.authURL,
+		"username":     s.username,
+		"password_set": s.password != "",
+		"payload":      string(payload),
+	}).Debug("SDP auth request details")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.authURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("failed to create auth request: %w", err)
@@ -294,6 +331,11 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+	s.log.WithFields(map[string]interface{}{
+		"Content-Type":     req.Header.Get("Content-Type"),
+		"X-Requested-With": req.Header.Get("X-Requested-With"),
+	}).Debug("SDP auth request headers")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
