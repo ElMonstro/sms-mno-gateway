@@ -16,6 +16,18 @@ import (
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/ports"
 )
 
+// gatewayQueueName is the input queue that uses primary DLR URLs.
+// Messages from any other queue use DLRURLApiV2. Set via SetGatewayQueueName.
+var gatewayQueueName = "SMS_MNO_GATEWAY_QUEUE"
+
+// SetGatewayQueueName configures the queue name that maps to primary DLR URLs.
+// Call this at app startup with the value from config.
+func SetGatewayQueueName(name string) {
+	if name != "" {
+		gatewayQueueName = name
+	}
+}
+
 // BaseSMPPSender provides common SMPP (Kannel) gateway functionality
 // Used by Airtel, Telkom, Equitel, CM, and Safaricom transactional
 type BaseSMPPSender struct {
@@ -26,6 +38,7 @@ type BaseSMPPSender struct {
 	username       string
 	password       string
 	dlrURL         string
+	dlrURLApiV2    string
 	httpClient     *httpclient.Client
 	circuitBreaker *circuitbreaker.CircuitBreaker
 	metrics        ports.Metrics
@@ -41,6 +54,7 @@ type SMPPConfig struct {
 	Username       string
 	Password       string
 	DLRURL         string
+	DLRURLApiV2    string
 	HTTPClient     *httpclient.Client
 	CircuitBreaker *circuitbreaker.CircuitBreaker
 	Metrics        ports.Metrics
@@ -57,6 +71,7 @@ func NewBaseSMPPSender(cfg *SMPPConfig) *BaseSMPPSender {
 		username:       cfg.Username,
 		password:       cfg.Password,
 		dlrURL:         cfg.DLRURL,
+		dlrURLApiV2:    cfg.DLRURLApiV2,
 		httpClient:     cfg.HTTPClient,
 		circuitBreaker: cfg.CircuitBreaker,
 		metrics:        cfg.Metrics,
@@ -186,8 +201,15 @@ func (s *BaseSMPPSender) buildRequestURL(msg *domain.Message) string {
 	return fmt.Sprintf("%s?%s", s.baseURL, params.Encode())
 }
 
-// buildDLRURL constructs the DLR callback URL with tracking parameters
+// buildDLRURL constructs the DLR callback URL with tracking parameters.
+// Selects between the primary DLR URL (for GATEWAY_QUEUE_NAME) and the
+// API v2 DLR URL (for all other input queues).
 func (s *BaseSMPPSender) buildDLRURL(msg *domain.Message) string {
+	baseURL := s.dlrURL
+	if s.dlrURLApiV2 != "" && msg.SourceQueue != "" && msg.SourceQueue != gatewayQueueName {
+		baseURL = s.dlrURLApiV2
+	}
+
 	// Build DLR URL with placeholders that Kannel will replace
 	// %d = status code, %A = answer, %P = sender, %p = receiver, %t = time, %n = user ref, %b = message
 	params := url.Values{}
@@ -202,7 +224,7 @@ func (s *BaseSMPPSender) buildDLRURL(msg *domain.Message) string {
 	params.Set("usr", "%n")
 	params.Set("message", "%b")
 
-	return fmt.Sprintf("%s?%s", s.dlrURL, params.Encode())
+	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
 
 // Network returns the network this sender handles

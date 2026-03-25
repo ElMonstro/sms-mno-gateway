@@ -58,6 +58,10 @@ type QueuesConfig struct {
 	SaveToDBQueue   string
 	RetryQueue      string
 	DeadLetterQueue string
+
+	// GatewayQueueName is the queue that uses the primary DLR URLs.
+	// Messages from any other input queue use the _API_V2 DLR URLs.
+	GatewayQueueName string
 }
 
 // MNOConfig holds all MNO-specific configuration
@@ -73,23 +77,25 @@ type MNOConfig struct {
 
 // SDPConfig holds Safaricom SDP configuration
 type SDPConfig struct {
-	AuthURL  string
-	SendURL  string
-	AuthUser string
-	Username string
-	Password string
-	DLRURL   string
-	TokenKey string
-	TokenTTL time.Duration
+	AuthURL     string
+	SendURL     string
+	AuthUser    string
+	Username    string
+	Password    string
+	DLRURL      string
+	DLRURLApiV2 string
+	TokenKey    string
+	TokenTTL    time.Duration
 }
 
 // SMPPConfig holds SMPP (Kannel) gateway configuration
 type SMPPConfig struct {
-	URL      string
-	SMSC     string
-	Username string
-	Password string
-	DLRURL   string
+	URL         string
+	SMSC        string
+	Username    string
+	Password    string
+	DLRURL      string
+	DLRURLApiV2 string
 }
 
 // RateLimitConfig holds per-network rate limit configuration
@@ -157,10 +163,11 @@ func Load() *Config {
 			ReconnectWait: getEnvAsDuration("RABBITMQ_RECONNECT_WAIT", 5*time.Second),
 		},
 		Queues: QueuesConfig{
-			InputQueues:     getEnvAsStringSlice("INPUT_QUEUES", []string{"TITANIC-KE_SMS_QUEUE", "CONSUME_TO_MNO"}),
-			SaveToDBQueue:   getEnv("SAVE_TO_DB_QUEUE", "SAVE_TO_DB"),
-			RetryQueue:      getEnv("SMS_RETRY_QUEUE", "SMS_RETRY_QUEUE"),
-			DeadLetterQueue: getEnv("SMS_DEAD_LETTER_QUEUE", "SMS_DEAD_LETTER_QUEUE"),
+			InputQueues:      getEnvAsStringSlice("INPUT_QUEUES", []string{"TITANIC-KE_SMS_QUEUE", "CONSUME_TO_MNO"}),
+			SaveToDBQueue:    getEnv("SAVE_TO_DB_QUEUE", "SAVE_TO_DB"),
+			RetryQueue:       getEnv("SMS_RETRY_QUEUE", "SMS_RETRY_QUEUE"),
+			DeadLetterQueue:  getEnv("SMS_DEAD_LETTER_QUEUE", "SMS_DEAD_LETTER_QUEUE"),
+			GatewayQueueName: getEnv("GATEWAY_QUEUE_NAME", "SMS_MNO_GATEWAY_QUEUE"),
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{
@@ -169,44 +176,50 @@ func Load() *Config {
 				AuthUser: getEnv("SDP_USERNAME", getEnv("SDP_USER", "")),
 				Username: getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
 				Password: getEnv("SDP_PASSWORD", ""),
-				DLRURL:   getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
-				TokenKey: getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
+				DLRURL:      getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
+				DLRURLApiV2: getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
+				TokenKey:    getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
 				TokenTTL: getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
 			},
 			SafaricomSMPP: SMPPConfig{
-				URL:      getEnv("SAFARICOM_SMPP_URL", "http://10.0.0.87:80/cgi-bin/sendsms"),
-				SMSC:     getEnv("SAFARICOM_SMPP_SMSC", "SAFARICOM"),
-				Username: getEnv("SAFARICOM_SMPP_USERNAME", ""),
-				Password: getEnv("SAFARICOM_SMPP_PASSWORD", ""),
-				DLRURL:   getEnv("SAFARICOM_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+				URL:         getEnv("SAFARICOM_SMPP_URL", "http://10.0.0.87:80/cgi-bin/sendsms"),
+				SMSC:        getEnv("SAFARICOM_SMPP_SMSC", "SAFARICOM"),
+				Username:    getEnv("SAFARICOM_SMPP_USERNAME", ""),
+				Password:    getEnv("SAFARICOM_SMPP_PASSWORD", ""),
+				DLRURL:      getEnv("SAFARICOM_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+				DLRURLApiV2: getEnv("SAFARICOM_SMPP_DLR_URL_API_V2", getEnv("SAFARICOM_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
 			},
 			Airtel: SMPPConfig{
-				URL:      getEnv("AIRTEL_SMPP_URL", "http://10.0.0.88:14013/cgi-bin/sendsms"),
-				SMSC:     getEnv("AIRTEL_SMPP_SMSC", "AIRTEL"),
-				Username: getEnv("AIRTEL_SMPP_USERNAME", ""),
-				Password: getEnv("AIRTEL_SMPP_PASSWORD", ""),
-				DLRURL:   getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+				URL:         getEnv("AIRTEL_SMPP_URL", "http://10.0.0.88:14013/cgi-bin/sendsms"),
+				SMSC:        getEnv("AIRTEL_SMPP_SMSC", "AIRTEL"),
+				Username:    getEnv("AIRTEL_SMPP_USERNAME", ""),
+				Password:    getEnv("AIRTEL_SMPP_PASSWORD", ""),
+				DLRURL:      getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+				DLRURLApiV2: getEnv("AIRTEL_SMPP_DLR_URL_API_V2", getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
 			},
 			AirtelPromo: SMPPConfig{
-				URL:      getEnv("AIRTEL_SMPP_URL_PROMO", getEnv("AIRTEL_SMPP_URL", "http://10.0.0.88:14013/cgi-bin/sendsms")),
-				SMSC:     getEnv("AIRTEL_SMPP_SMSC_PROMO", getEnv("AIRTEL_SMPP_SMSC", "AIRTEL")),
-				Username: getEnv("AIRTEL_SMPP_USERNAME_PROMO", getEnv("AIRTEL_SMPP_USERNAME", "")),
-				Password: getEnv("AIRTEL_SMPP_PASSWORD_PROMO", getEnv("AIRTEL_SMPP_PASSWORD", "")),
-				DLRURL:   getEnv("AIRTEL_SMPP_DLR_URL_PROMO", getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
+				URL:         getEnv("AIRTEL_SMPP_URL_PROMO", getEnv("AIRTEL_SMPP_URL", "http://10.0.0.88:14013/cgi-bin/sendsms")),
+				SMSC:        getEnv("AIRTEL_SMPP_SMSC_PROMO", getEnv("AIRTEL_SMPP_SMSC", "AIRTEL")),
+				Username:    getEnv("AIRTEL_SMPP_USERNAME_PROMO", getEnv("AIRTEL_SMPP_USERNAME", "")),
+				Password:    getEnv("AIRTEL_SMPP_PASSWORD_PROMO", getEnv("AIRTEL_SMPP_PASSWORD", "")),
+				DLRURL:      getEnv("AIRTEL_SMPP_DLR_URL_PROMO", getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
+				DLRURLApiV2: getEnv("AIRTEL_SMPP_DLR_URL_PROMO_API_V2", getEnv("AIRTEL_SMPP_DLR_URL_PROMO", getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"))),
 			},
 			Telkom: SMPPConfig{
-				URL:      getEnv("TELKOM_SMPP_URL", "http://34.77.25.98:14013/cgi-bin/sendsms"),
-				SMSC:     getEnv("TELKOM_SMPP_SMSC", "TELKOM"),
-				Username: getEnv("TELKOM_SMPP_USERNAME", ""),
-				Password: getEnv("TELKOM_SMPP_PASSWORD", ""),
-				DLRURL:   getEnv("TELKOM_SMPP_DLR_URL", "http://197.248.69.107:48088/save"),
+				URL:         getEnv("TELKOM_SMPP_URL", "http://34.77.25.98:14013/cgi-bin/sendsms"),
+				SMSC:        getEnv("TELKOM_SMPP_SMSC", "TELKOM"),
+				Username:    getEnv("TELKOM_SMPP_USERNAME", ""),
+				Password:    getEnv("TELKOM_SMPP_PASSWORD", ""),
+				DLRURL:      getEnv("TELKOM_SMPP_DLR_URL", "http://197.248.69.107:48088/save"),
+				DLRURLApiV2: getEnv("TELKOM_SMPP_DLR_URL_API_V2", getEnv("TELKOM_SMPP_DLR_URL", "http://197.248.69.107:48088/save")),
 			},
 			Equitel: SMPPConfig{
-				URL:      getEnv("EQUITEL_SMPP_URL", "http://10.0.0.87:80/cgi-bin/sendsms"),
-				SMSC:     getEnv("EQUITEL_SMPP_SMSC", "EQUITEL"),
-				Username: getEnv("EQUITEL_SMPP_USERNAME", ""),
-				Password: getEnv("EQUITEL_SMPP_PASSWORD", ""),
-				DLRURL:   getEnv("EQUITEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+				URL:         getEnv("EQUITEL_SMPP_URL", "http://10.0.0.87:80/cgi-bin/sendsms"),
+				SMSC:        getEnv("EQUITEL_SMPP_SMSC", "EQUITEL"),
+				Username:    getEnv("EQUITEL_SMPP_USERNAME", ""),
+				Password:    getEnv("EQUITEL_SMPP_PASSWORD", ""),
+				DLRURL:      getEnv("EQUITEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+				DLRURLApiV2: getEnv("EQUITEL_SMPP_DLR_URL_API_V2", getEnv("EQUITEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
 			},
 			CM: SMPPConfig{
 				URL:      getEnv("CM_SMPP_URL", "http://34.77.25.98:14013/cgi-bin/sendsms"),

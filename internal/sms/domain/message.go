@@ -19,6 +19,10 @@ type Message struct {
 	RetryCount  int       `json:"retryCount,omitempty"`
 	LastError   string    `json:"lastError,omitempty"`
 	ProcessedAt time.Time `json:"processedAt,omitempty"`
+	// SourceQueue is the RabbitMQ queue this message was consumed from.
+	// Set at consumption time and used to select the correct DLR URL.
+	// Not serialized — runtime only.
+	SourceQueue string `json:"-"`
 }
 
 // Network returns the parsed Network type
@@ -115,6 +119,7 @@ func (m *Message) Clone() *Message {
 		RetryCount:  m.RetryCount,
 		LastError:   m.LastError,
 		ProcessedAt: m.ProcessedAt,
+		SourceQueue: m.SourceQueue,
 	}
 }
 
