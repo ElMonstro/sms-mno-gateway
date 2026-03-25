@@ -65,6 +65,7 @@ type MNOConfig struct {
 	SafaricomSDP  SDPConfig
 	SafaricomSMPP SMPPConfig
 	Airtel        SMPPConfig
+	AirtelPromo   SMPPConfig
 	Telkom        SMPPConfig
 	Equitel       SMPPConfig
 	CM            SMPPConfig
@@ -185,6 +186,13 @@ func Load() *Config {
 				Username: getEnv("AIRTEL_SMPP_USERNAME", ""),
 				Password: getEnv("AIRTEL_SMPP_PASSWORD", ""),
 				DLRURL:   getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save"),
+			},
+			AirtelPromo: SMPPConfig{
+				URL:      getEnv("AIRTEL_SMPP_URL_PROMO", getEnv("AIRTEL_SMPP_URL", "http://10.0.0.88:14013/cgi-bin/sendsms")),
+				SMSC:     getEnv("AIRTEL_SMPP_SMSC_PROMO", getEnv("AIRTEL_SMPP_SMSC", "AIRTEL")),
+				Username: getEnv("AIRTEL_SMPP_USERNAME_PROMO", getEnv("AIRTEL_SMPP_USERNAME", "")),
+				Password: getEnv("AIRTEL_SMPP_PASSWORD_PROMO", getEnv("AIRTEL_SMPP_PASSWORD", "")),
+				DLRURL:   getEnv("AIRTEL_SMPP_DLR_URL_PROMO", getEnv("AIRTEL_SMPP_DLR_URL", "http://10.0.0.100:8088/save")),
 			},
 			Telkom: SMPPConfig{
 				URL:      getEnv("TELKOM_SMPP_URL", "http://34.77.25.98:14013/cgi-bin/sendsms"),

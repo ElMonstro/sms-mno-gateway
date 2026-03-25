@@ -16,6 +16,7 @@ type Factory struct {
 	safaricomSDP  *SafaricomSDPSender
 	safaricomSMPP *SafaricomSMPPSender
 	airtel        *AirtelSender
+	airtelPromo   *AirtelSender
 	telkom        *TelkomSender
 	equitel       *EquitelSender
 	cm            *CMSender
@@ -83,6 +84,17 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			cfg.Metrics,
 			log,
 		),
+		airtelPromo: NewAirtelSender(
+			mnoCfg.AirtelPromo.URL,
+			mnoCfg.AirtelPromo.SMSC,
+			mnoCfg.AirtelPromo.Username,
+			mnoCfg.AirtelPromo.Password,
+			mnoCfg.AirtelPromo.DLRURL,
+			cfg.HTTPClient,
+			airCB,
+			cfg.Metrics,
+			log,
+		),
 		telkom: NewTelkomSender(
 			mnoCfg.Telkom.URL,
 			mnoCfg.Telkom.SMSC,
@@ -134,6 +146,23 @@ func (f *Factory) GetSender(msg *domain.Message) (ports.MNOSender, error) {
 		return f.safaricomSMPP, nil
 	}
 
+	// Airtel traffic split by packageId — transactional and promotional
+	// use separate SMPP credentials
+	if network == domain.NetworkAirtel {
+		if msg.IsTransactional() {
+			f.log.WithFields(map[string]interface{}{
+				"correlator": msg.Correlator,
+				"packageId":  msg.PackageID,
+			}).Debug("Routing to Airtel SMPP (transactional)")
+			return f.airtel, nil
+		}
+		f.log.WithFields(map[string]interface{}{
+			"correlator": msg.Correlator,
+			"packageId":  msg.PackageID,
+		}).Debug("Routing to Airtel SMPP (promotional)")
+		return f.airtelPromo, nil
+	}
+
 	return f.GetSenderByNetwork(network)
 }
 
@@ -161,6 +190,7 @@ func (f *Factory) ListSenders() []ports.MNOSender {
 		f.safaricomSDP,
 		f.safaricomSMPP,
 		f.airtel,
+		f.airtelPromo,
 		f.telkom,
 		f.equitel,
 		f.cm,
