@@ -18,7 +18,7 @@ type SafaricomSMPPSender struct {
 
 // NewSafaricomSMPPSender creates a new Safaricom SMPP sender
 func NewSafaricomSMPPSender(
-	baseURL, smsc, username, password, dlrURL string,
+	baseURL, smsc, username, password, dlrURL, dlrURLApiV2 string,
 	httpClient *httpclient.Client,
 	circuitBreaker *circuitbreaker.CircuitBreaker,
 	metrics ports.Metrics,
@@ -33,6 +33,7 @@ func NewSafaricomSMPPSender(
 			Username:       username,
 			Password:       password,
 			DLRURL:         dlrURL,
+			DLRURLApiV2:    dlrURLApiV2,
 			HTTPClient:     httpClient,
 			CircuitBreaker: circuitBreaker,
 			Metrics:        metrics,

@@ -17,7 +17,7 @@ type EquitelSender struct {
 
 // NewEquitelSender creates a new Equitel SMPP sender
 func NewEquitelSender(
-	baseURL, smsc, username, password, dlrURL string,
+	baseURL, smsc, username, password, dlrURL, dlrURLApiV2 string,
 	httpClient *httpclient.Client,
 	circuitBreaker *circuitbreaker.CircuitBreaker,
 	metrics ports.Metrics,
@@ -32,6 +32,7 @@ func NewEquitelSender(
 			Username:       username,
 			Password:       password,
 			DLRURL:         dlrURL,
+			DLRURLApiV2:    dlrURLApiV2,
 			HTTPClient:     httpClient,
 			CircuitBreaker: circuitBreaker,
 			Metrics:        metrics,

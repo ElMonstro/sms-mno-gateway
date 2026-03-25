@@ -37,6 +37,10 @@ type FactoryConfig struct {
 func NewFactory(cfg *FactoryConfig) *Factory {
 	log := cfg.Logger
 
+	// Configure the DLR gateway queue name so BaseSMPPSender can select
+	// the correct DLR URL based on the message's source queue.
+	SetGatewayQueueName(cfg.Config.Queues.GatewayQueueName)
+
 	// Get circuit breakers
 	safCB, _ := cfg.BreakerRegistry.Get(domain.NetworkSafaricom)
 	airCB, _ := cfg.BreakerRegistry.Get(domain.NetworkAirtel)
@@ -68,6 +72,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.SafaricomSMPP.Username,
 			mnoCfg.SafaricomSMPP.Password,
 			mnoCfg.SafaricomSMPP.DLRURL,
+			mnoCfg.SafaricomSMPP.DLRURLApiV2,
 			cfg.HTTPClient,
 			safCB,
 			cfg.Metrics,
@@ -79,6 +84,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.Airtel.Username,
 			mnoCfg.Airtel.Password,
 			mnoCfg.Airtel.DLRURL,
+			mnoCfg.Airtel.DLRURLApiV2,
 			cfg.HTTPClient,
 			airCB,
 			cfg.Metrics,
@@ -90,6 +96,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.AirtelPromo.Username,
 			mnoCfg.AirtelPromo.Password,
 			mnoCfg.AirtelPromo.DLRURL,
+			mnoCfg.AirtelPromo.DLRURLApiV2,
 			cfg.HTTPClient,
 			airCB,
 			cfg.Metrics,
@@ -101,6 +108,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.Telkom.Username,
 			mnoCfg.Telkom.Password,
 			mnoCfg.Telkom.DLRURL,
+			mnoCfg.Telkom.DLRURLApiV2,
 			cfg.HTTPClient,
 			telCB,
 			cfg.Metrics,
@@ -112,6 +120,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.Equitel.Username,
 			mnoCfg.Equitel.Password,
 			mnoCfg.Equitel.DLRURL,
+			mnoCfg.Equitel.DLRURLApiV2,
 			cfg.HTTPClient,
 			equCB,
 			cfg.Metrics,
