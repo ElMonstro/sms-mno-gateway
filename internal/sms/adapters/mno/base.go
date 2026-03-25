@@ -208,6 +208,19 @@ func (s *BaseSMPPSender) buildDLRURL(msg *domain.Message) string {
 	baseURL := s.dlrURL
 	if s.dlrURLApiV2 != "" && msg.SourceQueue != "" && msg.SourceQueue != gatewayQueueName {
 		baseURL = s.dlrURLApiV2
+		s.log.WithFields(map[string]interface{}{
+			"correlator":   msg.Correlator,
+			"network":      s.network,
+			"source_queue": msg.SourceQueue,
+			"dlr_url":      baseURL,
+		}).Debug("SMPP using API v2 DLR URL")
+	} else {
+		s.log.WithFields(map[string]interface{}{
+			"correlator":   msg.Correlator,
+			"network":      s.network,
+			"source_queue": msg.SourceQueue,
+			"dlr_url":      baseURL,
+		}).Debug("SMPP using primary DLR URL")
 	}
 
 	// Build DLR URL with placeholders that Kannel will replace
