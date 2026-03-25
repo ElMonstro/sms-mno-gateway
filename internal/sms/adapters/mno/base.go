@@ -204,6 +204,10 @@ func (s *BaseSMPPSender) buildRequestURL(msg *domain.Message) string {
 // buildDLRURL constructs the DLR callback URL with tracking parameters.
 // Selects between the primary DLR URL (for GATEWAY_QUEUE_NAME) and the
 // API v2 DLR URL (for all other input queues).
+//
+// Kannel placeholders (%d, %A, %P, %p, %t, %n, %b) must NOT be URL-encoded —
+// url.Values.Encode() would turn %d into %25d, breaking Kannel's substitution.
+// Dynamic values (correlator, username, password) are encoded via url.QueryEscape.
 func (s *BaseSMPPSender) buildDLRURL(msg *domain.Message) string {
 	baseURL := s.dlrURL
 	if s.dlrURLApiV2 != "" && msg.SourceQueue != "" && msg.SourceQueue != gatewayQueueName {
@@ -223,21 +227,15 @@ func (s *BaseSMPPSender) buildDLRURL(msg *domain.Message) string {
 		}).Debug("SMPP using primary DLR URL")
 	}
 
-	// Build DLR URL with placeholders that Kannel will replace
-	// %d = status code, %A = answer, %P = sender, %p = receiver, %t = time, %n = user ref, %b = message
-	params := url.Values{}
-	params.Set("correlator", msg.Correlator)
-	params.Set("user", s.username)
-	params.Set("passwd", s.password)
-	params.Set("status", "%d")
-	params.Set("answer", "%A")
-	params.Set("sender", "%P")
-	params.Set("reciever", "%p") // Note: typo is intentional (matching existing system)
-	params.Set("time", "%t")
-	params.Set("usr", "%n")
-	params.Set("message", "%b")
-
-	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+	// Kannel placeholders: %d=status, %A=answer, %P=sender, %p=receiver, %t=time, %n=user ref, %b=message
+	// Note: "reciever" typo is intentional (matching existing system)
+	return fmt.Sprintf(
+		"%s?correlator=%s&user=%s&passwd=%s&status=%%d&answer=%%A&sender=%%P&reciever=%%p&time=%%t&usr=%%n&message=%%b",
+		baseURL,
+		url.QueryEscape(msg.Correlator),
+		url.QueryEscape(s.username),
+		url.QueryEscape(s.password),
+	)
 }
 
 // Network returns the network this sender handles
