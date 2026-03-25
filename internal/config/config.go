@@ -76,7 +76,6 @@ type SDPConfig struct {
 	AuthURL  string
 	SendURL  string
 	AuthUser string
-	AuthUser string
 	Username string
 	Password string
 	DLRURL   string
