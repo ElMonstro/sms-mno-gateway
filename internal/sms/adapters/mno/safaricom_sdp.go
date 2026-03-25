@@ -282,8 +282,18 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 // Messages from the gateway queue use the primary DLR URL; all others use the API v2 URL.
 func (s *SafaricomSDPSender) resolveDLRURL(msg *domain.Message) string {
 	if s.dlrURLApiV2 != "" && msg.SourceQueue != "" && msg.SourceQueue != gatewayQueueName {
+		s.log.WithFields(map[string]interface{}{
+			"correlator":   msg.Correlator,
+			"source_queue": msg.SourceQueue,
+			"dlr_url":      s.dlrURLApiV2,
+		}).Debug("SDP using API v2 DLR URL")
 		return s.dlrURLApiV2
 	}
+	s.log.WithFields(map[string]interface{}{
+		"correlator":   msg.Correlator,
+		"source_queue": msg.SourceQueue,
+		"dlr_url":      s.dlrURL,
+	}).Debug("SDP using primary DLR URL")
 	return s.dlrURL
 }
 
