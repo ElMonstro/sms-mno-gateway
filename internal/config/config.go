@@ -77,14 +77,15 @@ type MNOConfig struct {
 
 // SDPConfig holds Safaricom SDP configuration
 type SDPConfig struct {
-	AuthURL  string
-	SendURL  string
-	AuthUser string
-	Username string
-	Password string
-	DLRURL   string
-	TokenKey string
-	TokenTTL time.Duration
+	AuthURL     string
+	SendURL     string
+	AuthUser    string
+	Username    string
+	Password    string
+	DLRURL      string
+	DLRURLApiV2 string
+	TokenKey    string
+	TokenTTL    time.Duration
 }
 
 // SMPPConfig holds SMPP (Kannel) gateway configuration
@@ -175,8 +176,9 @@ func Load() *Config {
 				AuthUser: getEnv("SDP_USERNAME", getEnv("SDP_USER", "")),
 				Username: getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
 				Password: getEnv("SDP_PASSWORD", ""),
-				DLRURL:   getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
-				TokenKey: getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
+				DLRURL:      getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
+				DLRURLApiV2: getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
+				TokenKey:    getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
 				TokenTTL: getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
 			},
 			SafaricomSMPP: SMPPConfig{

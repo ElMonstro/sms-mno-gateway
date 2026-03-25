@@ -58,6 +58,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			Username:       mnoCfg.SafaricomSDP.Username,
 			Password:       mnoCfg.SafaricomSDP.Password,
 			DLRURL:         mnoCfg.SafaricomSDP.DLRURL,
+			DLRURLApiV2:    mnoCfg.SafaricomSDP.DLRURLApiV2,
 			TokenKey:       mnoCfg.SafaricomSDP.TokenKey,
 			TokenTTL:       mnoCfg.SafaricomSDP.TokenTTL,
 			TokenCache:     cfg.TokenCache,

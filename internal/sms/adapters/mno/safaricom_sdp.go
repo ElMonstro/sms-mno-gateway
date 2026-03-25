@@ -26,6 +26,7 @@ type SafaricomSDPSender struct {
 	username       string
 	password       string
 	dlrURL         string
+	dlrURLApiV2    string
 	tokenKey       string
 	tokenTTL       time.Duration
 	tokenCache     ports.TokenCache
@@ -43,6 +44,7 @@ type SDPConfig struct {
 	Username       string
 	Password       string
 	DLRURL         string
+	DLRURLApiV2    string
 	TokenKey       string
 	TokenTTL       time.Duration
 	TokenCache     ports.TokenCache
@@ -96,6 +98,7 @@ func NewSafaricomSDPSender(cfg *SDPConfig) *SafaricomSDPSender {
 		username:       cfg.Username,
 		password:       cfg.Password,
 		dlrURL:         cfg.DLRURL,
+		dlrURLApiV2:    cfg.DLRURLApiV2,
 		tokenKey:       cfg.TokenKey,
 		tokenTTL:       cfg.TokenTTL,
 		tokenCache:     cfg.TokenCache,
@@ -186,7 +189,7 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 				MSISDN:            msg.NormalizeMSISDN(),
 				Message:           msg.Content,
 				UniqueID:          msg.Correlator,
-				ActionResponseURL: s.dlrURL,
+				ActionResponseURL: s.resolveDLRURL(msg),
 			},
 		},
 	}
@@ -273,6 +276,15 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	}).Error("Message rejected by SDP")
 
 	return domain.NewPermanentResult(msg, mnoErr, latency)
+}
+
+// resolveDLRURL selects the correct DLR URL based on the message source queue.
+// Messages from the gateway queue use the primary DLR URL; all others use the API v2 URL.
+func (s *SafaricomSDPSender) resolveDLRURL(msg *domain.Message) string {
+	if s.dlrURLApiV2 != "" && msg.SourceQueue != "" && msg.SourceQueue != gatewayQueueName {
+		return s.dlrURLApiV2
+	}
+	return s.dlrURL
 }
 
 // getToken retrieves the authentication token, using cache when possible
