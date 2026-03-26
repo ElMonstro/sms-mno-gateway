@@ -290,31 +290,36 @@ func (app *App) Start(ctx context.Context) error {
 
 		queueName := consumer.QueueName()
 
-		// Process deliveries in a goroutine
-		// MessageRouter is the ONLY consumer - it handles both transactional and promotional
+		// Fan out delivery processing across WorkerCount goroutines per queue.
+		// All goroutines read from the same deliveries channel (safe — Go channels are concurrent-safe).
+		// This ensures the worker pool is actually used concurrently rather than fed sequentially.
+		concurrency := app.Config.App.WorkerCount
 		if app.Config.Priority.Enabled && app.MessageRouter != nil {
 			// Priority routing enabled - use MessageRouter
-			// MessageRouter processes all messages and handles delivery ack
-			go func(queueName string, deliveries <-chan ports.Delivery) {
-				app.Logger.Infof("Started processing messages from queue: %s (with priority routing)", queueName)
-				for delivery := range deliveries {
-					if err := app.MessageRouter.RouteDelivery(ctx, delivery, queueName); err != nil {
-						app.Logger.WithError(err).Error("Failed to route delivery")
+			app.Logger.Infof("Starting %d delivery processors for queue: %s (priority routing)", concurrency, queueName)
+			for i := 0; i < concurrency; i++ {
+				go func(queueName string, deliveries <-chan ports.Delivery) {
+					for delivery := range deliveries {
+						if err := app.MessageRouter.RouteDelivery(ctx, delivery, queueName); err != nil {
+							app.Logger.WithError(err).Error("Failed to route delivery")
+						}
 					}
-				}
-				app.Logger.Infof("Stopped processing messages from queue: %s", queueName)
-			}(queueName, deliveries)
+					app.Logger.Infof("Delivery processor stopped for queue: %s", queueName)
+				}(queueName, deliveries)
+			}
 		} else {
 			// Standard processing - use Processor directly
-			go func(queueName string, deliveries <-chan ports.Delivery) {
-				app.Logger.Infof("Started processing messages from queue: %s", queueName)
-				for delivery := range deliveries {
-					if err := app.Processor.ProcessDelivery(ctx, delivery); err != nil {
-						app.Logger.WithError(err).Error("Failed to process delivery")
+			app.Logger.Infof("Starting %d delivery processors for queue: %s", concurrency, queueName)
+			for i := 0; i < concurrency; i++ {
+				go func(queueName string, deliveries <-chan ports.Delivery) {
+					for delivery := range deliveries {
+						if err := app.Processor.ProcessDelivery(ctx, delivery); err != nil {
+							app.Logger.WithError(err).Error("Failed to process delivery")
+						}
 					}
-				}
-				app.Logger.Infof("Stopped processing messages from queue: %s", queueName)
-			}(queueName, deliveries)
+					app.Logger.Infof("Delivery processor stopped for queue: %s", queueName)
+				}(queueName, deliveries)
+			}
 		}
 	}
 
