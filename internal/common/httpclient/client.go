@@ -50,9 +50,9 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Timeout:               30 * time.Second,
-		MaxIdleConns:          100,
-		MaxConnsPerHost:       20,
-		MaxIdleConnsPerHost:   20,
+		MaxIdleConns:          500,
+		MaxConnsPerHost:       300,
+		MaxIdleConnsPerHost:   300,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
