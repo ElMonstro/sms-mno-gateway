@@ -23,6 +23,7 @@ type SafaricomSDPSender struct {
 	authURL        string
 	sendURL        string
 	authUsername   string
+	countryPrefix  string
 	username       string
 	password       string
 	dlrURL         string
@@ -41,6 +42,7 @@ type SDPConfig struct {
 	AuthURL        string
 	SendURL        string
 	AuthUsername   string
+	CountryPrefix  string
 	Username       string
 	Password       string
 	DLRURL         string
@@ -95,6 +97,7 @@ func NewSafaricomSDPSender(cfg *SDPConfig) *SafaricomSDPSender {
 		authURL:        cfg.AuthURL,
 		sendURL:        cfg.SendURL,
 		authUsername:   authUsername,
+		countryPrefix:  cfg.CountryPrefix,
 		username:       cfg.Username,
 		password:       cfg.Password,
 		dlrURL:         cfg.DLRURL,
@@ -215,11 +218,15 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Authorization", "Bearer "+token)
+	if s.countryPrefix != "" {
+		req.Header.Set("X-Country", s.countryPrefix)
+	}
 
 	s.log.WithFields(map[string]interface{}{
 		"correlator":   msg.Correlator,
 		"content_type": req.Header.Get("Content-Type"),
 		"auth_scheme":  "Bearer",
+		"x_country":    req.Header.Get("X-Country"),
 	}).Debug("SDP send request headers")
 
 	// Execute request
