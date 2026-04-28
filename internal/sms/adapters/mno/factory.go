@@ -55,6 +55,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			AuthURL:        mnoCfg.SafaricomSDP.AuthURL,
 			SendURL:        mnoCfg.SafaricomSDP.SendURL,
 			AuthUsername:   mnoCfg.SafaricomSDP.AuthUser,
+			CountryPrefix:  mnoCfg.SafaricomSDP.CountryPrefix,
 			Username:       mnoCfg.SafaricomSDP.Username,
 			Password:       mnoCfg.SafaricomSDP.Password,
 			DLRURL:         mnoCfg.SafaricomSDP.DLRURL,
@@ -161,20 +162,20 @@ func (f *Factory) GetSender(msg *domain.Message) (ports.MNOSender, error) {
 	if network == domain.NetworkAirtel {
 		if msg.IsTransactional() {
 			f.log.WithFields(map[string]interface{}{
-				"correlator":  msg.Correlator,
-				"packageId":   msg.PackageID,
+				"correlator":   msg.Correlator,
+				"packageId":    msg.PackageID,
 				"source_queue": msg.SourceQueue,
-				"smpp_url":    f.airtel.baseURL,
-				"smsc":        f.airtel.smsc,
+				"smpp_url":     f.airtel.baseURL,
+				"smsc":         f.airtel.smsc,
 			}).Debug("Routing to Airtel SMPP (transactional)")
 			return f.airtel, nil
 		}
 		f.log.WithFields(map[string]interface{}{
-			"correlator":  msg.Correlator,
-			"packageId":   msg.PackageID,
+			"correlator":   msg.Correlator,
+			"packageId":    msg.PackageID,
 			"source_queue": msg.SourceQueue,
-			"smpp_url":    f.airtelPromo.baseURL,
-			"smsc":        f.airtelPromo.smsc,
+			"smpp_url":     f.airtelPromo.baseURL,
+			"smsc":         f.airtelPromo.smsc,
 		}).Debug("Routing to Airtel SMPP (promotional)")
 		return f.airtelPromo, nil
 	}

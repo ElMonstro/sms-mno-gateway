@@ -110,6 +110,9 @@ func TestSafaricomSDPSender_Send_Success(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
+			if countryHeader := r.Header.Get("X-Country"); countryHeader != "KEN" {
+				t.Errorf("Expected X-Country KEN, got %s", countryHeader)
+			}
 
 			// Verify request body
 			var req SDPSendRequest
@@ -136,16 +139,17 @@ func TestSafaricomSDPSender_Send_Success(t *testing.T) {
 	defer server.Close()
 
 	sender := NewSafaricomSDPSender(&SDPConfig{
-		AuthURL:    server.URL + "/auth",
-		SendURL:    server.URL + "/send",
-		Username:   "testuser",
-		Password:   "testpass",
-		DLRURL:     "http://dlr.example.com",
-		TokenKey:   "test_token_key",
-		TokenTTL:   25 * time.Minute,
-		TokenCache: tokenCache,
-		HTTPClient: httpclient.New(httpclient.DefaultConfig()),
-		Logger:     logger.NewNoop(),
+		AuthURL:       server.URL + "/auth",
+		SendURL:       server.URL + "/send",
+		CountryPrefix: "KEN",
+		Username:      "testuser",
+		Password:      "testpass",
+		DLRURL:        "http://dlr.example.com",
+		TokenKey:      "test_token_key",
+		TokenTTL:      25 * time.Minute,
+		TokenCache:    tokenCache,
+		HTTPClient:    httpclient.New(httpclient.DefaultConfig()),
+		Logger:        logger.NewNoop(),
 	})
 
 	msg := &domain.Message{
@@ -198,6 +202,9 @@ func TestSafaricomSDPSender_Send_UseCachedToken(t *testing.T) {
 			if authHeader != "Bearer cached-token-abc" {
 				t.Errorf("Expected cached token, got %s", authHeader)
 			}
+			if countryHeader := r.Header.Get("X-Country"); countryHeader != "KEN" {
+				t.Errorf("Expected X-Country KEN, got %s", countryHeader)
+			}
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"status":"success"}`))
 		}
@@ -205,16 +212,17 @@ func TestSafaricomSDPSender_Send_UseCachedToken(t *testing.T) {
 	defer server.Close()
 
 	sender := NewSafaricomSDPSender(&SDPConfig{
-		AuthURL:    server.URL + "/auth",
-		SendURL:    server.URL + "/send",
-		Username:   "testuser",
-		Password:   "testpass",
-		DLRURL:     "http://dlr.example.com",
-		TokenKey:   "test_token_key",
-		TokenTTL:   25 * time.Minute,
-		TokenCache: tokenCache,
-		HTTPClient: httpclient.New(httpclient.DefaultConfig()),
-		Logger:     logger.NewNoop(),
+		AuthURL:       server.URL + "/auth",
+		SendURL:       server.URL + "/send",
+		CountryPrefix: "KEN",
+		Username:      "testuser",
+		Password:      "testpass",
+		DLRURL:        "http://dlr.example.com",
+		TokenKey:      "test_token_key",
+		TokenTTL:      25 * time.Minute,
+		TokenCache:    tokenCache,
+		HTTPClient:    httpclient.New(httpclient.DefaultConfig()),
+		Logger:        logger.NewNoop(),
 	})
 
 	msg := newTestMessage()
@@ -256,16 +264,17 @@ func TestSafaricomSDPSender_Send_TokenExpired(t *testing.T) {
 	defer server.Close()
 
 	sender := NewSafaricomSDPSender(&SDPConfig{
-		AuthURL:    server.URL + "/auth",
-		SendURL:    server.URL + "/send",
-		Username:   "testuser",
-		Password:   "testpass",
-		DLRURL:     "http://dlr.example.com",
-		TokenKey:   "test_token_key",
-		TokenTTL:   25 * time.Minute,
-		TokenCache: tokenCache,
-		HTTPClient: httpclient.New(httpclient.DefaultConfig()),
-		Logger:     logger.NewNoop(),
+		AuthURL:       server.URL + "/auth",
+		SendURL:       server.URL + "/send",
+		CountryPrefix: "KEN",
+		Username:      "testuser",
+		Password:      "testpass",
+		DLRURL:        "http://dlr.example.com",
+		TokenKey:      "test_token_key",
+		TokenTTL:      25 * time.Minute,
+		TokenCache:    tokenCache,
+		HTTPClient:    httpclient.New(httpclient.DefaultConfig()),
+		Logger:        logger.NewNoop(),
 	})
 
 	msg := newTestMessage()
