@@ -147,11 +147,11 @@ func TestMessage_IsPromotional(t *testing.T) {
 			expected:         false,
 		},
 		{
-			name:             "TRANSACTIONAL packageId overrides gateway source",
+			name:             "gateway source overrides TRANSACTIONAL packageId",
 			packageID:        "TRANSACTIONAL",
 			sourceQueue:      gwQueue,
 			gatewayQueueName: gwQueue,
-			expected:         false,
+			expected:         true,
 		},
 		{
 			name:             "TRANSACTIONAL packageId with api-v2 source is not promotional",
@@ -168,11 +168,18 @@ func TestMessage_IsPromotional(t *testing.T) {
 			expected:         true,
 		},
 		{
-			name:             "no gateway queue name configured falls back to promotional",
+			name:             "no gateway queue name configured — source queue check skipped, falls back to packageId",
 			packageID:        "bulk",
 			sourceQueue:      "CONSUME_TO_MNO",
 			gatewayQueueName: "",
 			expected:         true,
+		},
+		{
+			name:             "no gateway queue name, TRANSACTIONAL packageId falls back to not promotional",
+			packageID:        "TRANSACTIONAL",
+			sourceQueue:      "CONSUME_TO_MNO",
+			gatewayQueueName: "",
+			expected:         false,
 		},
 		{
 			name:             "empty packageId from gateway queue is promotional",

@@ -37,18 +37,18 @@ func (m *Message) IsTransactional() bool {
 }
 
 // IsPromotional returns true when the message should be treated as promotional for retry routing.
-// A message is promotional when its source queue is the configured gateway queue.
-// PackageID "TRANSACTIONAL" always overrides this — such messages are never promotional.
-// When SourceQueue is unset (e.g. direct injection in tests), falls back to treating
-// the message as promotional if packageId is not "TRANSACTIONAL".
+// Source queue is authoritative — mirrors the DLR URL selection logic in resolveDLRURL:
+//   - SourceQueue == gatewayQueueName → promotional (old gateway traffic)
+//   - SourceQueue != gatewayQueueName → not promotional (api-v2 traffic, always transactional)
+//
+// When SourceQueue is unset, falls back to packageId: anything not explicitly "TRANSACTIONAL"
+// is treated as promotional (preserves backward-compat for tests and direct publishing).
 func (m *Message) IsPromotional(gatewayQueueName string) bool {
-	if strings.ToUpper(strings.TrimSpace(m.PackageID)) == "TRANSACTIONAL" {
-		return false
-	}
 	if m.SourceQueue != "" && gatewayQueueName != "" {
 		return m.SourceQueue == gatewayQueueName
 	}
-	return true
+	// No source queue info — fall back to packageId
+	return strings.ToUpper(strings.TrimSpace(m.PackageID)) != "TRANSACTIONAL"
 }
 
 // NormalizeMSISDN converts local format (0xxx) to international format (254xxx)
