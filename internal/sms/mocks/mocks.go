@@ -116,10 +116,11 @@ func (f *MockMNOSenderFactory) ListSenders() []ports.MNOSender {
 
 // MockQueuePublisher is a mock implementation of ports.QueuePublisher
 type MockQueuePublisher struct {
-	mu             sync.Mutex
-	connected      bool
-	PublishedItems []*PublishedItem
-	PublishFunc    func(ctx context.Context, result *domain.SendResult) error
+	mu               sync.Mutex
+	connected        bool
+	PublishedItems   []*PublishedItem
+	PublishFunc      func(ctx context.Context, result *domain.SendResult) error
+	GatewayQueueName string
 }
 
 type PublishedItem struct {
@@ -166,10 +167,10 @@ func (p *MockQueuePublisher) PublishResult(ctx context.Context, result *domain.S
 	switch result.Type {
 	case domain.ResultRetryable:
 		// Mirror real publisher: route to type-specific delay queue
-		if result.Message.IsTransactional() {
-			queueType = "transactional_delay"
-		} else {
+		if result.Message.IsPromotional(p.GatewayQueueName) {
 			queueType = "promotional_delay"
+		} else {
+			queueType = "transactional_delay"
 		}
 	case domain.ResultPermanent:
 		queueType = "dlq"
@@ -198,9 +199,9 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 	}
 
 	for _, r := range batch.Retryable {
-		queueType := "promotional_delay"
-		if r.Message.IsTransactional() {
-			queueType = "transactional_delay"
+		queueType := "transactional_delay"
+		if r.Message.IsPromotional(p.GatewayQueueName) {
+			queueType = "promotional_delay"
 		}
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,

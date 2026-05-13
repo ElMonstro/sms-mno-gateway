@@ -156,6 +156,7 @@ func New(cfg *config.Config) (*App, error) {
 			TransactionalRetryQueue: cfg.Queues.TransactionalRetryQueue,
 			PromotionalRetryQueue:   cfg.Queues.PromotionalRetryQueue,
 		},
+		GatewayQueueName:     cfg.Queues.GatewayQueueName,
 		TransactionalDelayMs: cfg.Retry.TransactionalDelayMs,
 		PromotionalDelayMs:   cfg.Retry.PromotionalDelayMs,
 		Logger:               app.Logger,

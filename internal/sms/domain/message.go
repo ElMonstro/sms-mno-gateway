@@ -30,10 +30,25 @@ func (m *Message) Network() Network {
 	return ParseNetwork(m.NetworkRaw)
 }
 
-// IsTransactional checks if the message is marked as transactional
-// Transactional messages for Safaricom are routed via SMPP instead of SDP
+// IsTransactional checks if the message is explicitly marked as transactional via packageId.
+// Used for Safaricom sender selection (SMPP vs SDP). Does not consider source queue.
 func (m *Message) IsTransactional() bool {
 	return strings.ToUpper(strings.TrimSpace(m.PackageID)) == "TRANSACTIONAL"
+}
+
+// IsPromotional returns true when the message should be treated as promotional for retry routing.
+// A message is promotional when its source queue is the configured gateway queue.
+// PackageID "TRANSACTIONAL" always overrides this — such messages are never promotional.
+// When SourceQueue is unset (e.g. direct injection in tests), falls back to treating
+// the message as promotional if packageId is not "TRANSACTIONAL".
+func (m *Message) IsPromotional(gatewayQueueName string) bool {
+	if strings.ToUpper(strings.TrimSpace(m.PackageID)) == "TRANSACTIONAL" {
+		return false
+	}
+	if m.SourceQueue != "" && gatewayQueueName != "" {
+		return m.SourceQueue == gatewayQueueName
+	}
+	return true
 }
 
 // NormalizeMSISDN converts local format (0xxx) to international format (254xxx)

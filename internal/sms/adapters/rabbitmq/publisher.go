@@ -13,9 +13,10 @@ import (
 
 // Publisher implements the ports.QueuePublisher interface
 type Publisher struct {
-	conn   *Connection
-	queues ports.QueueConfig
-	log    logger.Logger
+	conn             *Connection
+	queues           ports.QueueConfig
+	gatewayQueueName string
+	log              logger.Logger
 }
 
 // PublisherConfig holds configuration for the publisher
@@ -23,6 +24,11 @@ type PublisherConfig struct {
 	Connection *Connection
 	Queues     ports.QueueConfig
 	Logger     logger.Logger
+
+	// GatewayQueueName is the input queue whose messages are treated as promotional.
+	// Messages from any other queue are treated as transactional for retry routing.
+	// Matches the GATEWAY_QUEUE_NAME env var.
+	GatewayQueueName string
 
 	// Delay queue TTL values — required to declare delay queues with correct x-message-ttl
 	TransactionalDelayMs int
@@ -34,9 +40,10 @@ type PublisherConfig struct {
 // held for the configured delay before routing to the active retry queues via DLX.
 func NewPublisher(cfg *PublisherConfig) (*Publisher, error) {
 	p := &Publisher{
-		conn:   cfg.Connection,
-		queues: cfg.Queues,
-		log:    cfg.Logger,
+		conn:             cfg.Connection,
+		queues:           cfg.Queues,
+		gatewayQueueName: cfg.GatewayQueueName,
+		log:              cfg.Logger,
 	}
 
 	ctx := context.Background()
@@ -130,10 +137,10 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 	case domain.ResultSuccess:
 		queueName = p.queues.SaveToDBQueue
 	case domain.ResultRetryable:
-		if result.Message.IsTransactional() {
-			queueName = p.queues.TransactionalDelayQueue
-		} else {
+		if result.Message.IsPromotional(p.gatewayQueueName) {
 			queueName = p.queues.PromotionalDelayQueue
+		} else {
+			queueName = p.queues.TransactionalDelayQueue
 		}
 	case domain.ResultPermanent:
 		queueName = p.queues.DeadLetterQueue
@@ -182,10 +189,10 @@ func (p *Publisher) PublishBatchResults(ctx context.Context, results *domain.Bat
 	// This reduces publish calls from N to at most 2.
 	var transactionalRetries, promotionalRetries []*domain.Message
 	for _, result := range results.Retryable {
-		if result.Message.IsTransactional() {
-			transactionalRetries = append(transactionalRetries, result.Message)
-		} else {
+		if result.Message.IsPromotional(p.gatewayQueueName) {
 			promotionalRetries = append(promotionalRetries, result.Message)
+		} else {
+			transactionalRetries = append(transactionalRetries, result.Message)
 		}
 	}
 
