@@ -165,7 +165,12 @@ func (p *MockQueuePublisher) PublishResult(ctx context.Context, result *domain.S
 	queueType := "save_to_db"
 	switch result.Type {
 	case domain.ResultRetryable:
-		queueType = "retry"
+		// Mirror real publisher: route to type-specific delay queue
+		if result.Message.IsTransactional() {
+			queueType = "transactional_delay"
+		} else {
+			queueType = "promotional_delay"
+		}
 	case domain.ResultPermanent:
 		queueType = "dlq"
 	}
@@ -185,7 +190,6 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Publish successful messages
 	for _, r := range batch.Successful {
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
@@ -193,15 +197,17 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 		})
 	}
 
-	// Publish retryable messages
 	for _, r := range batch.Retryable {
+		queueType := "promotional_delay"
+		if r.Message.IsTransactional() {
+			queueType = "transactional_delay"
+		}
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
-			QueueType: "retry",
+			QueueType: queueType,
 		})
 	}
 
-	// Publish failed messages
 	for _, r := range batch.Failed {
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
