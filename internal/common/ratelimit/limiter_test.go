@@ -62,13 +62,13 @@ func TestAllow_ReturnsTrue(t *testing.T) {
 	}
 }
 
-// TestAllow_UnknownNetworkFallback verifies that an unknown network falls back
-// to the NetworkUnknown limiter rather than panicking.
-func TestAllow_UnknownNetworkFallback(t *testing.T) {
-	l := New(&Config{Default: 50})
+// TestAllow_INTNLUsedCMRate verifies that NetworkINTNL is initialised from Config.CM
+// (the same rate as CM) and allows tokens when CM is set to a high rate.
+func TestAllow_INTNLUsedCMRate(t *testing.T) {
+	l := New(&Config{CM: 100, Default: 10})
 
 	if !l.Allow(domain.NetworkINTNL) {
-		t.Error("Allow(INTNL) should not block immediately on a high-rate limiter")
+		t.Error("Allow(INTNL) should not block immediately when CM rate is 100")
 	}
 }
 

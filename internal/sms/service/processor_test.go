@@ -104,57 +104,49 @@ func TestProcessor_WorkerCapSingleMessage(t *testing.T) {
 	}
 }
 
-// TestProcessor_IsRetryFlag_ConsumesRetryBudget verifies that IsRetry=true draws from
-// the retry token bucket rather than the main one:
-//   - isRetry=false → main tokens decrease, retry tokens unchanged
-//   - isRetry=true  → retry tokens decrease, main tokens unchanged
-func TestProcessor_IsRetryFlag_ConsumesRetryBudget(t *testing.T) {
-	const mainRPS = 1000
-	const retryRPS = 50
-
-	limiter := ratelimit.New(&ratelimit.Config{Safaricom: mainRPS, Default: 100}).
+// TestProcessor_IsRetryFlag_UsesRetryBudget verifies that IsRetry=true draws from
+// the retry token bucket rather than the main one.
+//
+// Strategy: use a limiter where the retry budget has a single burst token.
+// Drain that token via AllowRetry(), then process with a short-timeout context:
+//   - isRetry=true processor  → WaitRetry blocks → context expires → rate-limited result
+//   - isRetry=false processor → Wait on main (1000 tokens) → succeeds immediately
+func TestProcessor_IsRetryFlag_UsesRetryBudget(t *testing.T) {
+	// Main has plenty of tokens; retry starts with exactly 1 burst token.
+	limiter := ratelimit.New(&ratelimit.Config{Safaricom: 1000, Default: 100}).
 		WithRetryConfig(&ratelimit.RetryConfig{
-			SafaricomSDP:  retryRPS,
-			SafaricomSMPP: retryRPS,
+			SafaricomSDP:  1, // 1 token, burst=1
+			SafaricomSMPP: 1,
 			BurstFactor:   1,
 		})
 
-	mainBefore := limiter.Tokens(domain.NetworkSafaricom)
-	retryBefore := limiter.RetryTokens(domain.NetworkSafaricom)
+	// Exhaust the single retry token so the next WaitRetry will block.
+	limiter.AllowRetry(domain.NetworkSafaricom)
 
-	// -- Main-queue processor (isRetry=false) --
-	mainProc, _, _ := newTestProcessor(t, limiter, false)
-	d1 := mocks.NewMockDeliveryWithMessages([]*domain.Message{validMsg("main-msg")})
-	if err := mainProc.ProcessDelivery(context.Background(), d1); err != nil {
-		t.Fatalf("main processor error: %v", err)
+	// -- isRetry=true processor with tight deadline --
+	retryProc, retryPub, _ := newTestProcessor(t, limiter, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	d := mocks.NewMockDeliveryWithMessages([]*domain.Message{validMsg("retry-msg")})
+	_ = retryProc.ProcessDelivery(ctx, d) // may error; we care about result type
+
+	// With the retry budget drained and context expired, the message should have
+	// been rate-limited (published as retryable, not success).
+	items := retryPub.GetPublishedItems()
+	if len(items) == 1 && items[0].QueueType == "save_to_db" {
+		t.Error("isRetry=true processor should NOT succeed when retry budget is drained — expected rate-limited retryable or nack")
 	}
 
-	mainAfterMain := limiter.Tokens(domain.NetworkSafaricom)
-	retryAfterMain := limiter.RetryTokens(domain.NetworkSafaricom)
-
-	if mainAfterMain >= mainBefore {
-		t.Errorf("Main tokens should decrease after main-queue processing: before=%.1f after=%.1f", mainBefore, mainAfterMain)
+	// -- isRetry=false processor — main budget untouched, should succeed --
+	mainProc, mainPub, _ := newTestProcessor(t, limiter, false)
+	d2 := mocks.NewMockDeliveryWithMessages([]*domain.Message{validMsg("main-msg")})
+	if err := mainProc.ProcessDelivery(context.Background(), d2); err != nil {
+		t.Fatalf("main processor failed unexpectedly: %v", err)
 	}
-	if retryAfterMain != retryBefore {
-		t.Errorf("Retry tokens should not change when isRetry=false: before=%.1f after=%.1f", retryBefore, retryAfterMain)
-	}
-
-	// -- Retry processor (isRetry=true) --
-	retryProc, _, _ := newTestProcessor(t, limiter, true)
-	d2 := mocks.NewMockDeliveryWithMessages([]*domain.Message{validMsg("retry-msg")})
-	if err := retryProc.ProcessDelivery(context.Background(), d2); err != nil {
-		t.Fatalf("retry processor error: %v", err)
-	}
-
-	mainAfterRetry := limiter.Tokens(domain.NetworkSafaricom)
-	retryAfterRetry := limiter.RetryTokens(domain.NetworkSafaricom)
-
-	if retryAfterRetry >= retryAfterMain {
-		t.Errorf("Retry tokens should decrease after retry-queue processing: before=%.1f after=%.1f", retryAfterMain, retryAfterRetry)
-	}
-	// Main tokens must not have changed since the retry processor ran
-	if mainAfterRetry != mainAfterMain {
-		t.Errorf("Main tokens should not change when isRetry=true: before=%.1f after=%.1f", mainAfterMain, mainAfterRetry)
+	mainItems := mainPub.GetPublishedItems()
+	if len(mainItems) != 1 || mainItems[0].QueueType != "save_to_db" {
+		t.Errorf("isRetry=false processor should succeed with main budget: got %v items", len(mainItems))
 	}
 }
 

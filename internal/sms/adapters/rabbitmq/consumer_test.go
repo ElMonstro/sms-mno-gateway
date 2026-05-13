@@ -84,7 +84,7 @@ func TestConsumer_ParseMessages_SingleMessage(t *testing.T) {
 func TestConsumer_ParseMessages_InvalidJSON(t *testing.T) {
 	c := &Consumer{log: logger.NewNoop()}
 
-	_, err := c.parseMessages([]byte("not valid json"))
+	_, err := c.parseMessages([]byte("not valid json"), "test-queue")
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
@@ -93,7 +93,7 @@ func TestConsumer_ParseMessages_InvalidJSON(t *testing.T) {
 func TestConsumer_ParseMessages_EmptyArray(t *testing.T) {
 	c := &Consumer{log: logger.NewNoop()}
 
-	parsed, err := c.parseMessages([]byte("[]"))
+	parsed, err := c.parseMessages([]byte("[]"), "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}

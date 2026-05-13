@@ -133,6 +133,18 @@ func (l *Limiter) Wait(ctx context.Context, network domain.Network) error {
 	return limiter.Wait(ctx)
 }
 
+// AllowRetry returns true if an event may happen now for the network on the retry queue.
+// This is non-blocking. Returns false if the retry budget is exhausted.
+func (l *Limiter) AllowRetry(network domain.Network) bool {
+	l.mu.RLock()
+	limiter, ok := l.retry[network]
+	if !ok {
+		limiter = l.retry[domain.NetworkUnknown]
+	}
+	l.mu.RUnlock()
+	return limiter.Allow()
+}
+
 // WaitRetry blocks until the retry rate limiter allows an event for the network.
 // Returns an error if the context is cancelled.
 func (l *Limiter) WaitRetry(ctx context.Context, network domain.Network) error {
