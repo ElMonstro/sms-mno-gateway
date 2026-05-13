@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+
+	// "strconv"
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/circuitbreaker"
@@ -169,17 +170,17 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 
 	// Build request payload
 	packageID := uint64(0)
-	if msg.PackageID != "" {
-		parsedPackageID, parseErr := strconv.ParseUint(msg.PackageID, 10, 64)
-		if parseErr != nil {
-			s.log.WithFields(map[string]interface{}{
-				"correlator": msg.Correlator,
-				"package_id": msg.PackageID,
-			}).WithError(parseErr).Warn("Invalid package_id, defaulting to 0 for SDP request")
-		} else {
-			packageID = parsedPackageID
-		}
-	}
+	// if msg.PackageID != "" {
+	// 	parsedPackageID, parseErr := strconv.ParseUint(msg.PackageID, 10, 64)
+	// 	if parseErr != nil {
+	// 		s.log.WithFields(map[string]interface{}{
+	// 			"correlator": msg.Correlator,
+	// 			"package_id": msg.PackageID,
+	// 		}).WithError(parseErr).Warn("Invalid package_id, defaulting to 0 for SDP request")
+	// 	} else {
+	// 		packageID = parsedPackageID
+	// 	}
+	// }
 
 	payload := SDPSendRequest{
 		TimeStamp: time.Now().Unix(),
