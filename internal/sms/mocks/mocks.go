@@ -116,10 +116,11 @@ func (f *MockMNOSenderFactory) ListSenders() []ports.MNOSender {
 
 // MockQueuePublisher is a mock implementation of ports.QueuePublisher
 type MockQueuePublisher struct {
-	mu             sync.Mutex
-	connected      bool
-	PublishedItems []*PublishedItem
-	PublishFunc    func(ctx context.Context, result *domain.SendResult) error
+	mu               sync.Mutex
+	connected        bool
+	PublishedItems   []*PublishedItem
+	PublishFunc      func(ctx context.Context, result *domain.SendResult) error
+	GatewayQueueName string
 }
 
 type PublishedItem struct {
@@ -165,7 +166,12 @@ func (p *MockQueuePublisher) PublishResult(ctx context.Context, result *domain.S
 	queueType := "save_to_db"
 	switch result.Type {
 	case domain.ResultRetryable:
-		queueType = "retry"
+		// Mirror real publisher: route to type-specific delay queue
+		if result.Message.IsPromotional(p.GatewayQueueName) {
+			queueType = "promotional_delay"
+		} else {
+			queueType = "transactional_delay"
+		}
 	case domain.ResultPermanent:
 		queueType = "dlq"
 	}
@@ -185,7 +191,6 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Publish successful messages
 	for _, r := range batch.Successful {
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
@@ -193,15 +198,17 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 		})
 	}
 
-	// Publish retryable messages
 	for _, r := range batch.Retryable {
+		queueType := "transactional_delay"
+		if r.Message.IsPromotional(p.GatewayQueueName) {
+			queueType = "promotional_delay"
+		}
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
-			QueueType: "retry",
+			QueueType: queueType,
 		})
 	}
 
-	// Publish failed messages
 	for _, r := range batch.Failed {
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,

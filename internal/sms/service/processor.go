@@ -19,6 +19,7 @@ type Processor struct {
 	rateLimiter   *ratelimit.Limiter
 	metrics       ports.Metrics
 	workerCount   int
+	isRetry       bool // when true, uses WaitRetry() instead of Wait() for rate limiting
 	log           logger.Logger
 }
 
@@ -29,6 +30,7 @@ type ProcessorConfig struct {
 	RateLimiter   *ratelimit.Limiter
 	Metrics       ports.Metrics
 	WorkerCount   int
+	IsRetry       bool // set true for retry consumer processors
 	Logger        logger.Logger
 }
 
@@ -44,6 +46,7 @@ func NewProcessor(cfg *ProcessorConfig) *Processor {
 		rateLimiter:   cfg.RateLimiter,
 		metrics:       cfg.Metrics,
 		workerCount:   cfg.WorkerCount,
+		isRetry:       cfg.IsRetry,
 		log:           cfg.Logger,
 	}
 }
@@ -98,9 +101,13 @@ func (p *Processor) processBatch(ctx context.Context, messages []*domain.Message
 	msgChan := make(chan *domain.Message, len(messages))
 	resultChan := make(chan *domain.SendResult, len(messages))
 
-	// Start workers
+	// Cap workers at actual message count — avoids idle goroutines on small retry batches
 	var wg sync.WaitGroup
-	for i := 0; i < p.workerCount; i++ {
+	workers := p.workerCount
+	if workers > len(messages) {
+		workers = len(messages)
+	}
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go p.worker(ctx, i, msgChan, resultChan, &wg)
 	}
@@ -171,8 +178,14 @@ func (p *Processor) processMessage(ctx context.Context, msg *domain.Message) *do
 		return domain.NewPermanentResult(msg, err, time.Since(start))
 	}
 
-	// Apply rate limiting
-	if err := p.rateLimiter.Wait(ctx, network); err != nil {
+	// Apply rate limiting — retry processors use the reserved retry budget
+	var rateLimitErr error
+	if p.isRetry {
+		rateLimitErr = p.rateLimiter.WaitRetry(ctx, network)
+	} else {
+		rateLimitErr = p.rateLimiter.Wait(ctx, network)
+	}
+	if err := rateLimitErr; err != nil {
 		p.log.WithFields(map[string]interface{}{
 			"correlator": msg.Correlator,
 			"network":    network.String(),

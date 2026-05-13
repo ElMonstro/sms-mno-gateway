@@ -40,6 +40,12 @@ type App struct {
 	Processor       *service.Processor
 	HTTPServer      *api.Server
 
+	// Dedicated retry consumers and processors — isolated from main queue processing
+	TransactionalRetryConsumer *rabbitmq.Consumer
+	PromotionalRetryConsumer   *rabbitmq.Consumer
+	TransactionalRetryProcessor *service.Processor
+	PromotionalRetryProcessor   *service.Processor
+
 	// Priority routing components (optional, enabled via PRIORITY_ROUTING_ENABLED)
 	PriorityStore        ports.PriorityStore
 	TransactionalHandler *service.TransactionalHandler
@@ -66,7 +72,7 @@ func New(cfg *config.Config) (*App, error) {
 	app.HTTPClient = httpclient.New(httpclient.DefaultConfig())
 	app.Logger.Info("HTTP client initialized with connection pooling")
 
-	// 4. Initialize rate limiter
+	// 4. Initialize rate limiter with main budgets, then attach retry budgets
 	app.RateLimiter = ratelimit.New(&ratelimit.Config{
 		Safaricom: cfg.RateLimit.Safaricom,
 		Airtel:    cfg.RateLimit.Airtel,
@@ -74,8 +80,16 @@ func New(cfg *config.Config) (*App, error) {
 		Equitel:   cfg.RateLimit.Equitel,
 		CM:        cfg.RateLimit.CM,
 		Default:   cfg.RateLimit.Default,
+	}).WithRetryConfig(&ratelimit.RetryConfig{
+		SafaricomSDP:  cfg.Retry.RateLimitSafaricomSDP,
+		SafaricomSMPP: cfg.Retry.RateLimitSafaricomSMPP,
+		Airtel:        cfg.Retry.RateLimitAirtel,
+		Equitel:       cfg.Retry.RateLimitEquitel,
+		Telkom:        cfg.Retry.RateLimitTelkom,
+		CM:            cfg.Retry.RateLimitCM,
+		BurstFactor:   cfg.Retry.BurstFactor,
 	})
-	app.Logger.Info("Rate limiter initialized")
+	app.Logger.Info("Rate limiter initialized with main and retry budgets")
 
 	// 5. Initialize circuit breakers
 	app.BreakerRegistry = circuitbreaker.NewRegistry()
@@ -130,20 +144,27 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	app.Logger.Info("RabbitMQ connection established")
 
-	// 8. Initialize RabbitMQ publisher
+	// 8. Initialize RabbitMQ publisher (declares all queues including delay queues with TTL+DLX)
 	app.Publisher, err = rabbitmq.NewPublisher(&rabbitmq.PublisherConfig{
 		Connection: app.RabbitConn,
 		Queues: ports.QueueConfig{
-			SaveToDBQueue:   cfg.Queues.SaveToDBQueue,
-			RetryQueue:      cfg.Queues.RetryQueue,
-			DeadLetterQueue: cfg.Queues.DeadLetterQueue,
+			SaveToDBQueue:           cfg.Queues.SaveToDBQueue,
+			RetryQueue:              cfg.Queues.RetryQueue,
+			DeadLetterQueue:         cfg.Queues.DeadLetterQueue,
+			TransactionalDelayQueue: cfg.Queues.TransactionalDelayQueue,
+			PromotionalDelayQueue:   cfg.Queues.PromotionalDelayQueue,
+			TransactionalRetryQueue: cfg.Queues.TransactionalRetryQueue,
+			PromotionalRetryQueue:   cfg.Queues.PromotionalRetryQueue,
 		},
-		Logger: app.Logger,
+		GatewayQueueName:     cfg.Queues.GatewayQueueName,
+		TransactionalDelayMs: cfg.Retry.TransactionalDelayMs,
+		PromotionalDelayMs:   cfg.Retry.PromotionalDelayMs,
+		Logger:               app.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize publisher: %w", err)
 	}
-	app.Logger.Info("RabbitMQ publisher initialized")
+	app.Logger.Info("RabbitMQ publisher initialized with delay queues")
 
 	// 9. Initialize MNO sender factory
 	app.MNOFactory = mno.NewFactory(&mno.FactoryConfig{
@@ -159,12 +180,13 @@ func New(cfg *config.Config) (*App, error) {
 	// 10. Initialize router
 	app.Router = service.NewRouter(app.MNOFactory, app.Logger)
 
-	// 11. Initialize result handler
+	// 11. Initialize result handler with per-type retry limits
 	app.ResultHandler = service.NewResultHandler(&service.ResultHandlerConfig{
-		Publisher:  app.Publisher,
-		Metrics:    app.Metrics,
-		MaxRetries: 10,
-		Logger:     app.Logger,
+		Publisher:               app.Publisher,
+		Metrics:                 app.Metrics,
+		MaxRetriesTransactional: cfg.Retry.MaxRetriesTransactional,
+		MaxRetriesPromotional:   cfg.Retry.MaxRetriesPromotional,
+		Logger:                  app.Logger,
 	})
 
 	// 12. Initialize processor
@@ -248,7 +270,55 @@ func New(cfg *config.Config) (*App, error) {
 		app.Logger.Infof("Consumer initialized for queue: %s", queueName)
 	}
 
-	// 14. Initialize HTTP server
+	// 15. Initialize dedicated retry consumers and processors
+	// Each retry pool has its own prefetch and worker budget, isolated from main queues.
+	app.TransactionalRetryConsumer, err = rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
+		Connection: app.RabbitConn,
+		QueueName:  cfg.Queues.TransactionalRetryQueue,
+		Prefetch:   cfg.Retry.TransactionalPrefetch,
+		Logger:     app.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transactional retry consumer: %w", err)
+	}
+	app.Logger.Infof("Transactional retry consumer initialized (queue: %s, prefetch: %d)",
+		cfg.Queues.TransactionalRetryQueue, cfg.Retry.TransactionalPrefetch)
+
+	app.PromotionalRetryConsumer, err = rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
+		Connection: app.RabbitConn,
+		QueueName:  cfg.Queues.PromotionalRetryQueue,
+		Prefetch:   cfg.Retry.PromotionalPrefetch,
+		Logger:     app.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create promotional retry consumer: %w", err)
+	}
+	app.Logger.Infof("Promotional retry consumer initialized (queue: %s, prefetch: %d)",
+		cfg.Queues.PromotionalRetryQueue, cfg.Retry.PromotionalPrefetch)
+
+	app.TransactionalRetryProcessor = service.NewProcessor(&service.ProcessorConfig{
+		Router:        app.Router,
+		ResultHandler: app.ResultHandler,
+		RateLimiter:   app.RateLimiter,
+		Metrics:       app.Metrics,
+		WorkerCount:   cfg.Retry.TransactionalWorkerCount,
+		IsRetry:       true,
+		Logger:        app.Logger,
+	})
+	app.Logger.Infof("Transactional retry processor initialized with %d workers", cfg.Retry.TransactionalWorkerCount)
+
+	app.PromotionalRetryProcessor = service.NewProcessor(&service.ProcessorConfig{
+		Router:        app.Router,
+		ResultHandler: app.ResultHandler,
+		RateLimiter:   app.RateLimiter,
+		Metrics:       app.Metrics,
+		WorkerCount:   cfg.Retry.PromotionalWorkerCount,
+		IsRetry:       true,
+		Logger:        app.Logger,
+	})
+	app.Logger.Infof("Promotional retry processor initialized with %d workers", cfg.Retry.PromotionalWorkerCount)
+
+	// 17. Initialize HTTP server
 	app.HTTPServer = api.NewServer(&api.ServerConfig{
 		Port:         cfg.HTTP.Port,
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
@@ -323,6 +393,36 @@ func (app *App) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start retry consumers with their dedicated processors
+	type retryConsumerSpec struct {
+		consumer  *rabbitmq.Consumer
+		processor *service.Processor
+		workers   int
+	}
+	retrySpecs := []retryConsumerSpec{
+		{app.TransactionalRetryConsumer, app.TransactionalRetryProcessor, app.Config.Retry.TransactionalWorkerCount},
+		{app.PromotionalRetryConsumer, app.PromotionalRetryProcessor, app.Config.Retry.PromotionalWorkerCount},
+	}
+	for _, spec := range retrySpecs {
+		deliveries, err := spec.consumer.Consume(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start retry consumer for %s: %w", spec.consumer.QueueName(), err)
+		}
+		queueName := spec.consumer.QueueName()
+		processor := spec.processor
+		app.Logger.Infof("Starting %d retry delivery processors for queue: %s", spec.workers, queueName)
+		for i := 0; i < spec.workers; i++ {
+			go func(queueName string, deliveries <-chan ports.Delivery) {
+				for delivery := range deliveries {
+					if err := processor.ProcessDelivery(ctx, delivery); err != nil {
+						app.Logger.WithError(err).Errorf("Failed to process retry delivery from %s", queueName)
+					}
+				}
+				app.Logger.Infof("Retry delivery processor stopped for queue: %s", queueName)
+			}(queueName, deliveries)
+		}
+	}
+
 	// Start HTTP server in a goroutine
 	go func() {
 		if err := app.HTTPServer.Start(); err != nil {
@@ -354,10 +454,19 @@ func (app *App) Shutdown(ctx context.Context) error {
 		app.Logger.Info("Priority scheduler stopped")
 	}
 
-	// Close consumers
+	// Close main consumers
 	for _, consumer := range app.Consumers {
 		if err := consumer.Close(); err != nil {
 			app.Logger.WithError(err).Warn("Error closing consumer")
+		}
+	}
+
+	// Close retry consumers
+	for _, consumer := range []*rabbitmq.Consumer{app.TransactionalRetryConsumer, app.PromotionalRetryConsumer} {
+		if consumer != nil {
+			if err := consumer.Close(); err != nil {
+				app.Logger.WithError(err).Warn("Error closing retry consumer")
+			}
 		}
 	}
 

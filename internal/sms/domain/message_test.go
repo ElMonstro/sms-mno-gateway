@@ -122,6 +122,85 @@ func TestMessage_IsTransactional(t *testing.T) {
 	}
 }
 
+func TestMessage_IsPromotional(t *testing.T) {
+	const gwQueue = "SMS_MNO_GATEWAY_QUEUE"
+
+	tests := []struct {
+		name             string
+		packageID        string
+		sourceQueue      string
+		gatewayQueueName string
+		expected         bool
+	}{
+		{
+			name:             "gateway queue source is promotional",
+			packageID:        "bulk",
+			sourceQueue:      gwQueue,
+			gatewayQueueName: gwQueue,
+			expected:         true,
+		},
+		{
+			name:             "api-v2 queue source is not promotional",
+			packageID:        "bulk",
+			sourceQueue:      "CONSUME_TO_MNO",
+			gatewayQueueName: gwQueue,
+			expected:         false,
+		},
+		{
+			name:             "gateway source overrides TRANSACTIONAL packageId",
+			packageID:        "TRANSACTIONAL",
+			sourceQueue:      gwQueue,
+			gatewayQueueName: gwQueue,
+			expected:         true,
+		},
+		{
+			name:             "TRANSACTIONAL packageId with api-v2 source is not promotional",
+			packageID:        "TRANSACTIONAL",
+			sourceQueue:      "CONSUME_TO_MNO",
+			gatewayQueueName: gwQueue,
+			expected:         false,
+		},
+		{
+			name:             "no source queue falls back to promotional",
+			packageID:        "bulk",
+			sourceQueue:      "",
+			gatewayQueueName: gwQueue,
+			expected:         true,
+		},
+		{
+			name:             "no gateway queue name configured — source queue check skipped, falls back to packageId",
+			packageID:        "bulk",
+			sourceQueue:      "CONSUME_TO_MNO",
+			gatewayQueueName: "",
+			expected:         true,
+		},
+		{
+			name:             "no gateway queue name, TRANSACTIONAL packageId falls back to not promotional",
+			packageID:        "TRANSACTIONAL",
+			sourceQueue:      "CONSUME_TO_MNO",
+			gatewayQueueName: "",
+			expected:         false,
+		},
+		{
+			name:             "empty packageId from gateway queue is promotional",
+			packageID:        "",
+			sourceQueue:      gwQueue,
+			gatewayQueueName: gwQueue,
+			expected:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := &Message{PackageID: tt.packageID, SourceQueue: tt.sourceQueue}
+			result := msg.IsPromotional(tt.gatewayQueueName)
+			if result != tt.expected {
+				t.Errorf("IsPromotional() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestMessage_Network(t *testing.T) {
 	tests := []struct {
 		name       string

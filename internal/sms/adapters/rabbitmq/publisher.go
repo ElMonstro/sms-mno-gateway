@@ -13,9 +13,10 @@ import (
 
 // Publisher implements the ports.QueuePublisher interface
 type Publisher struct {
-	conn   *Connection
-	queues ports.QueueConfig
-	log    logger.Logger
+	conn             *Connection
+	queues           ports.QueueConfig
+	gatewayQueueName string
+	log              logger.Logger
 }
 
 // PublisherConfig holds configuration for the publisher
@@ -23,22 +24,59 @@ type PublisherConfig struct {
 	Connection *Connection
 	Queues     ports.QueueConfig
 	Logger     logger.Logger
+
+	// GatewayQueueName is the input queue whose messages are treated as promotional.
+	// Messages from any other queue are treated as transactional for retry routing.
+	// Matches the GATEWAY_QUEUE_NAME env var.
+	GatewayQueueName string
+
+	// Delay queue TTL values — required to declare delay queues with correct x-message-ttl
+	TransactionalDelayMs int
+	PromotionalDelayMs   int
 }
 
-// NewPublisher creates a new RabbitMQ publisher
+// NewPublisher creates a new RabbitMQ publisher and declares all output queues.
+// Delay queues are declared with TTL + dead-letter args so failed messages are
+// held for the configured delay before routing to the active retry queues via DLX.
 func NewPublisher(cfg *PublisherConfig) (*Publisher, error) {
 	p := &Publisher{
-		conn:   cfg.Connection,
-		queues: cfg.Queues,
-		log:    cfg.Logger,
+		conn:             cfg.Connection,
+		queues:           cfg.Queues,
+		gatewayQueueName: cfg.GatewayQueueName,
+		log:              cfg.Logger,
 	}
 
-	// Declare all output queues
 	ctx := context.Background()
+
+	// Standard output queues
 	for _, queue := range []string{cfg.Queues.SaveToDBQueue, cfg.Queues.RetryQueue, cfg.Queues.DeadLetterQueue} {
 		if err := p.conn.DeclareQueue(ctx, queue); err != nil {
 			return nil, err
 		}
+	}
+
+	// Active retry queues (no special args — consume directly)
+	for _, queue := range []string{cfg.Queues.TransactionalRetryQueue, cfg.Queues.PromotionalRetryQueue} {
+		if err := p.conn.DeclareQueue(ctx, queue); err != nil {
+			return nil, err
+		}
+	}
+
+	// Delay queues: messages wait here for TTL ms, then DLX routes them to retry queues
+	if err := p.conn.DeclareQueueWithArgs(ctx, cfg.Queues.TransactionalDelayQueue, amqp.Table{
+		"x-message-ttl":             int32(cfg.TransactionalDelayMs),
+		"x-dead-letter-exchange":    "",
+		"x-dead-letter-routing-key": cfg.Queues.TransactionalRetryQueue,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := p.conn.DeclareQueueWithArgs(ctx, cfg.Queues.PromotionalDelayQueue, amqp.Table{
+		"x-message-ttl":             int32(cfg.PromotionalDelayMs),
+		"x-dead-letter-exchange":    "",
+		"x-dead-letter-routing-key": cfg.Queues.PromotionalRetryQueue,
+	}); err != nil {
+		return nil, err
 	}
 
 	return p, nil
@@ -66,7 +104,8 @@ func (p *Publisher) Publish(ctx context.Context, queueName string, msg *domain.M
 	)
 }
 
-// PublishBatch publishes multiple messages to a queue
+// PublishBatch publishes multiple messages as a single AMQP message to a queue.
+// Consumers receive the full batch in one delivery, which is then unpacked.
 func (p *Publisher) PublishBatch(ctx context.Context, queueName string, msgs []*domain.Message) error {
 	body, err := json.Marshal(msgs)
 	if err != nil {
@@ -88,7 +127,9 @@ func (p *Publisher) PublishBatch(ctx context.Context, queueName string, msgs []*
 	)
 }
 
-// PublishResult publishes a send result to the appropriate queue
+// PublishResult publishes a send result to the appropriate queue.
+// Retryable messages are routed to the delay queue matching their type so they
+// wait the configured TTL before entering the active retry queue via DLX.
 func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult) error {
 	var queueName string
 
@@ -96,7 +137,11 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 	case domain.ResultSuccess:
 		queueName = p.queues.SaveToDBQueue
 	case domain.ResultRetryable:
-		queueName = p.queues.RetryQueue
+		if result.Message.IsPromotional(p.gatewayQueueName) {
+			queueName = p.queues.PromotionalDelayQueue
+		} else {
+			queueName = p.queues.TransactionalDelayQueue
+		}
 	case domain.ResultPermanent:
 		queueName = p.queues.DeadLetterQueue
 	default:
@@ -113,9 +158,7 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 		return err
 	}
 
-	// For permanent failures, also publish to SAVE_TO_DB so the record is
-	// persisted with status FAILED TO SEND, mirroring how successful sends
-	// are recorded.
+	// Permanent failures are also saved to DB with status FAILED TO SEND
 	if result.Type == domain.ResultPermanent {
 		p.log.WithFields(map[string]interface{}{
 			"correlator": result.Message.Correlator,
@@ -129,7 +172,10 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 	return nil
 }
 
-// PublishBatchResults publishes batch results to appropriate queues
+// PublishBatchResults publishes batch results to appropriate queues.
+// Retryable messages are grouped by type and published as two batches (one per delay queue)
+// rather than N individual publishes, reducing AMQP channel pressure under high error rates.
+// DLQ publishes are also batched to prevent channel exhaustion during mass failure events.
 func (p *Publisher) PublishBatchResults(ctx context.Context, results *domain.BatchResult) error {
 	// Publish successful messages
 	for _, result := range results.Successful {
@@ -139,22 +185,43 @@ func (p *Publisher) PublishBatchResults(ctx context.Context, results *domain.Bat
 		}
 	}
 
-	// Publish retryable messages
+	// Group retryable messages by type, then publish each group as a single batch.
+	// This reduces publish calls from N to at most 2.
+	var transactionalRetries, promotionalRetries []*domain.Message
 	for _, result := range results.Retryable {
-		if err := p.Publish(ctx, p.queues.RetryQueue, result.Message); err != nil {
-			p.log.WithError(err).Error("Failed to publish retryable message")
+		if result.Message.IsPromotional(p.gatewayQueueName) {
+			promotionalRetries = append(promotionalRetries, result.Message)
+		} else {
+			transactionalRetries = append(transactionalRetries, result.Message)
+		}
+	}
+
+	if len(transactionalRetries) > 0 {
+		if err := p.PublishBatch(ctx, p.queues.TransactionalDelayQueue, transactionalRetries); err != nil {
+			p.log.WithError(err).Error("Failed to publish transactional retries")
+			return err
+		}
+	}
+	if len(promotionalRetries) > 0 {
+		if err := p.PublishBatch(ctx, p.queues.PromotionalDelayQueue, promotionalRetries); err != nil {
+			p.log.WithError(err).Error("Failed to publish promotional retries")
 			return err
 		}
 	}
 
-	// Publish failed messages to DLQ and SAVE_TO_DB (with status FAILED TO SEND)
-	for _, result := range results.Failed {
-		if err := p.Publish(ctx, p.queues.DeadLetterQueue, result.Message); err != nil {
-			p.log.WithError(err).Error("Failed to publish failed message to DLQ")
+	// Batch DLQ and DB publishes for failed messages
+	if len(results.Failed) > 0 {
+		failedMsgs := make([]*domain.Message, len(results.Failed))
+		for i, result := range results.Failed {
+			failedMsgs[i] = result.Message
+		}
+
+		if err := p.PublishBatch(ctx, p.queues.DeadLetterQueue, failedMsgs); err != nil {
+			p.log.WithError(err).Error("Failed to publish failed messages to DLQ")
 			return err
 		}
-		if err := p.Publish(ctx, p.queues.SaveToDBQueue, result.Message); err != nil {
-			p.log.WithError(err).Error("Failed to publish failed message to SAVE_TO_DB")
+		if err := p.PublishBatch(ctx, p.queues.SaveToDBQueue, failedMsgs); err != nil {
+			p.log.WithError(err).Error("Failed to publish failed messages to SAVE_TO_DB")
 			return err
 		}
 	}

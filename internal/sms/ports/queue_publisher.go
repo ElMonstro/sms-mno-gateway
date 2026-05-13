@@ -33,9 +33,21 @@ type QueueConfig struct {
 	// SaveToDBQueue is the queue for successful messages
 	SaveToDBQueue string
 
-	// RetryQueue is the queue for retryable messages
+	// RetryQueue is the legacy retry queue (drained during migration)
 	RetryQueue string
 
 	// DeadLetterQueue is the queue for permanently failed messages
 	DeadLetterQueue string
+
+	// TransactionalDelayQueue receives failed transactional messages; TTL expires them into TransactionalRetryQueue
+	TransactionalDelayQueue string
+
+	// PromotionalDelayQueue receives failed promotional messages; TTL expires them into PromotionalRetryQueue
+	PromotionalDelayQueue string
+
+	// TransactionalRetryQueue is the active retry queue for transactional messages
+	TransactionalRetryQueue string
+
+	// PromotionalRetryQueue is the active retry queue for promotional messages
+	PromotionalRetryQueue string
 }
