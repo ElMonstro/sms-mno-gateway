@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/circuitbreaker"
