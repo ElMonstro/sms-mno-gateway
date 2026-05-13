@@ -17,6 +17,7 @@ type Config struct {
 	MNO       MNOConfig
 	RateLimit RateLimitConfig
 	Priority  PriorityConfig
+	Retry     RetryConfig
 }
 
 // AppConfig holds application-level configuration
@@ -62,6 +63,43 @@ type QueuesConfig struct {
 	// GatewayQueueName is the queue that uses the primary DLR URLs.
 	// Messages from any other input queue use the _API_V2 DLR URLs.
 	GatewayQueueName string
+
+	// Split retry queues — transactional and promotional processed independently
+	TransactionalRetryQueue string
+	PromotionalRetryQueue   string
+
+	// Delay queues — messages sit here for RetryDelayMs before routing to retry queues via DLX
+	TransactionalDelayQueue string
+	PromotionalDelayQueue   string
+}
+
+// RetryConfig holds configuration for the split retry consumer pools
+type RetryConfig struct {
+	// Fixed delay before a failed message re-enters the retry queue (via RabbitMQ TTL + DLX)
+	TransactionalDelayMs int
+	PromotionalDelayMs   int
+
+	// Dedicated worker pools for retry consumers
+	TransactionalWorkerCount int
+	TransactionalPrefetch    int
+	PromotionalWorkerCount   int
+	PromotionalPrefetch      int
+
+	// Per-network rate limit budget reserved for retry (TPS)
+	RateLimitSafaricomSDP  int
+	RateLimitSafaricomSMPP int
+	RateLimitAirtel        int
+	RateLimitEquitel       int
+	RateLimitTelkom        int
+	RateLimitCM            int
+
+	// BurstFactor allows retry to exceed its reserved rate when main queues are idle.
+	// Effective burst = reservedRPS * BurstFactor. Default 1 = strict reservation.
+	BurstFactor int
+
+	// Max retry attempts before routing to DLQ — separate limits by message type
+	MaxRetriesTransactional int
+	MaxRetriesPromotional   int
 }
 
 // MNOConfig holds all MNO-specific configuration
@@ -164,11 +202,15 @@ func Load() *Config {
 			ReconnectWait: getEnvAsDuration("RABBITMQ_RECONNECT_WAIT", 5*time.Second),
 		},
 		Queues: QueuesConfig{
-			InputQueues:      getEnvAsStringSlice("INPUT_QUEUES", []string{"TITANIC-KE_SMS_QUEUE", "CONSUME_TO_MNO"}),
-			SaveToDBQueue:    getEnv("SAVE_TO_DB_QUEUE", "SAVE_TO_DB"),
-			RetryQueue:       getEnv("SMS_RETRY_QUEUE", "SMS_RETRY_QUEUE"),
-			DeadLetterQueue:  getEnv("SMS_DEAD_LETTER_QUEUE", "SMS_DEAD_LETTER_QUEUE"),
-			GatewayQueueName: getEnv("GATEWAY_QUEUE_NAME", "SMS_MNO_GATEWAY_QUEUE"),
+			InputQueues:             getEnvAsStringSlice("INPUT_QUEUES", []string{"TITANIC-KE_SMS_QUEUE", "CONSUME_TO_MNO"}),
+			SaveToDBQueue:           getEnv("SAVE_TO_DB_QUEUE", "SAVE_TO_DB"),
+			RetryQueue:              getEnv("SMS_RETRY_QUEUE", "SMS_RETRY_QUEUE"),
+			DeadLetterQueue:         getEnv("SMS_DEAD_LETTER_QUEUE", "SMS_DEAD_LETTER_QUEUE"),
+			GatewayQueueName:        getEnv("GATEWAY_QUEUE_NAME", "SMS_MNO_GATEWAY_QUEUE"),
+			TransactionalRetryQueue: getEnv("SMS_TRANSACTIONAL_RETRY_QUEUE", "SMS_TRANSACTIONAL_RETRY_QUEUE"),
+			PromotionalRetryQueue:   getEnv("SMS_PROMOTIONAL_RETRY_QUEUE", "SMS_PROMOTIONAL_RETRY_QUEUE"),
+			TransactionalDelayQueue: getEnv("SMS_TRANSACTIONAL_DELAY_QUEUE", "SMS_TRANSACTIONAL_DELAY_QUEUE"),
+			PromotionalDelayQueue:   getEnv("SMS_PROMOTIONAL_DELAY_QUEUE", "SMS_PROMOTIONAL_DELAY_QUEUE"),
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{
@@ -252,10 +294,26 @@ func Load() *Config {
 			}),
 			DefaultWeight:        getEnvAsInt("PRIORITY_DEFAULT_WEIGHT", 1),
 			TransactionalWorkers: getEnvAsInt("PRIORITY_TRANSACTIONAL_WORKERS", 5),
-			// Credit-Based WRR configuration
-			CreditMultiplier:    getEnvAsInt("PRIORITY_CREDIT_MULTIPLIER", 10),      // 10 credits per weight unit
-			RefillPeriodMs:      getEnvAsInt("PRIORITY_REFILL_PERIOD_MS", 100),      // 100ms refill interval
-			MaxStarvationAgeSec: getEnvAsInt("PRIORITY_MAX_STARVATION_AGE_SEC", 10), // 10 seconds
+			CreditMultiplier:     getEnvAsInt("PRIORITY_CREDIT_MULTIPLIER", 10),
+			RefillPeriodMs:       getEnvAsInt("PRIORITY_REFILL_PERIOD_MS", 100),
+			MaxStarvationAgeSec:  getEnvAsInt("PRIORITY_MAX_STARVATION_AGE_SEC", 10),
+		},
+		Retry: RetryConfig{
+			TransactionalDelayMs:    getEnvAsInt("RETRY_TRANSACTIONAL_DELAY_MS", 5000),
+			PromotionalDelayMs:      getEnvAsInt("RETRY_PROMOTIONAL_DELAY_MS", 30000),
+			TransactionalWorkerCount: getEnvAsInt("RETRY_TRANSACTIONAL_WORKER_COUNT", 50),
+			TransactionalPrefetch:   getEnvAsInt("RETRY_TRANSACTIONAL_PREFETCH", 100),
+			PromotionalWorkerCount:  getEnvAsInt("RETRY_PROMOTIONAL_WORKER_COUNT", 200),
+			PromotionalPrefetch:     getEnvAsInt("RETRY_PROMOTIONAL_PREFETCH", 400),
+			RateLimitSafaricomSDP:   getEnvAsInt("RATE_LIMIT_RETRY_SAFARICOM_SDP", 200),
+			RateLimitSafaricomSMPP:  getEnvAsInt("RATE_LIMIT_RETRY_SAFARICOM_SMPP", 40),
+			RateLimitAirtel:         getEnvAsInt("RATE_LIMIT_RETRY_AIRTEL", 5),
+			RateLimitEquitel:        getEnvAsInt("RATE_LIMIT_RETRY_EQUITEL", 10),
+			RateLimitTelkom:         getEnvAsInt("RATE_LIMIT_RETRY_TELKOM", 10),
+			RateLimitCM:             getEnvAsInt("RATE_LIMIT_RETRY_CM", 5),
+			BurstFactor:             getEnvAsInt("RATE_LIMIT_RETRY_BURST_FACTOR", 1),
+			MaxRetriesTransactional: getEnvAsInt("RETRY_MAX_RETRIES_TRANSACTIONAL", 5),
+			MaxRetriesPromotional:   getEnvAsInt("RETRY_MAX_RETRIES_PROMOTIONAL", 10),
 		},
 	}
 }

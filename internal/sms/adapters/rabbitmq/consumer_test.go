@@ -33,7 +33,7 @@ func TestConsumer_ParseMessages_Batch(t *testing.T) {
 		t.Fatalf("Failed to marshal test messages: %v", err)
 	}
 
-	parsed, err := c.parseMessages(body)
+	parsed, err := c.parseMessages(body, "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}
@@ -67,7 +67,7 @@ func TestConsumer_ParseMessages_SingleMessage(t *testing.T) {
 		t.Fatalf("Failed to marshal test message: %v", err)
 	}
 
-	parsed, err := c.parseMessages(body)
+	parsed, err := c.parseMessages(body, "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}
@@ -84,7 +84,7 @@ func TestConsumer_ParseMessages_SingleMessage(t *testing.T) {
 func TestConsumer_ParseMessages_InvalidJSON(t *testing.T) {
 	c := &Consumer{log: logger.NewNoop()}
 
-	_, err := c.parseMessages([]byte("not valid json"))
+	_, err := c.parseMessages([]byte("not valid json"), "test-queue")
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
@@ -93,7 +93,7 @@ func TestConsumer_ParseMessages_InvalidJSON(t *testing.T) {
 func TestConsumer_ParseMessages_EmptyArray(t *testing.T) {
 	c := &Consumer{log: logger.NewNoop()}
 
-	parsed, err := c.parseMessages([]byte("[]"))
+	parsed, err := c.parseMessages([]byte("[]"), "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestConsumer_ParseMessages_WithAllFields(t *testing.T) {
 		t.Fatalf("Failed to marshal: %v", err)
 	}
 
-	parsed, err := c.parseMessages(body)
+	parsed, err := c.parseMessages(body, "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}

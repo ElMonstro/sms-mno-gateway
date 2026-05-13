@@ -32,7 +32,7 @@ func TestTransactionalHandlerConfig_DefaultWorkerCount(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -65,7 +65,7 @@ func TestTransactionalHandler_Stats(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -101,7 +101,7 @@ func TestTransactionalHandler_QueueDepth(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -135,7 +135,7 @@ func TestTransactionalHandler_HandleSync(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -189,7 +189,7 @@ func TestTransactionalHandler_HandleSync_InvalidMessage(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -235,7 +235,7 @@ func TestTransactionalHandler_StartStop(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -275,7 +275,7 @@ func TestTransactionalHandler_Handle(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -334,7 +334,7 @@ func TestTransactionalHandler_ProcessBatch(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -405,7 +405,7 @@ func TestTransactionalHandler_ProcessBatch_EmptyBatch(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{

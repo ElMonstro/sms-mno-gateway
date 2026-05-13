@@ -455,7 +455,7 @@ func TestPriorityScheduler_ProcessMessages_WithProcessor(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -542,7 +542,7 @@ func TestPriorityScheduler_ProcessMessages_CreditAcquisition(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -615,7 +615,7 @@ func TestPriorityScheduler_WeightedCreditDistribution(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -722,7 +722,7 @@ func TestPriorityScheduler_ContextCancellation(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -790,7 +790,7 @@ func TestPriorityScheduler_QueueStateCreation(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{
@@ -864,7 +864,7 @@ func TestPriorityScheduler_CreditStatsPerQueue(t *testing.T) {
 	resultHandler := NewResultHandler(&ResultHandlerConfig{
 		Publisher:  publisher,
 		Metrics:    metrics,
-		MaxRetries: 10,
+		MaxRetriesTransactional: 5, MaxRetriesPromotional: 10,
 		Logger:     log,
 	})
 	rateLimiter := ratelimit.New(&ratelimit.Config{

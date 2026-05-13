@@ -144,7 +144,7 @@ func (c *Connection) Close() error {
 	return nil
 }
 
-// DeclareQueue declares a queue
+// DeclareQueue declares a durable queue with no special arguments.
 func (c *Connection) DeclareQueue(ctx context.Context, name string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -156,6 +156,24 @@ func (c *Connection) DeclareQueue(ctx context.Context, name string) error {
 		false, // exclusive
 		false, // no-wait
 		nil,   // args
+	)
+	return err
+}
+
+// DeclareQueueWithArgs declares a durable queue with custom AMQP arguments.
+// Use this for delay queues that require x-message-ttl and x-dead-letter-routing-key.
+// Declaration is idempotent — safe to call on every restart provided args are stable.
+func (c *Connection) DeclareQueueWithArgs(ctx context.Context, name string, args amqp.Table) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	_, err := c.channel.QueueDeclare(
+		name,  // name
+		true,  // durable
+		false, // auto-delete
+		false, // exclusive
+		false, // no-wait
+		args,
 	)
 	return err
 }
