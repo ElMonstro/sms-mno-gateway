@@ -208,3 +208,16 @@ func (l *Limiter) Tokens(network domain.Network) float64 {
 	limiter := l.getMainLimiter(network)
 	return limiter.Tokens()
 }
+
+// RetryTokens returns the number of tokens currently available for a network on the retry queue.
+func (l *Limiter) RetryTokens(network domain.Network) float64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if limiter, ok := l.retry[network]; ok {
+		return limiter.Tokens()
+	}
+	if limiter, ok := l.retry[domain.NetworkUnknown]; ok {
+		return limiter.Tokens()
+	}
+	return 0
+}
