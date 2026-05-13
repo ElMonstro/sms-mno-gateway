@@ -138,12 +138,6 @@ func TestWithRetryConfig_UsesMaxSafaricomRate(t *testing.T) {
 		BurstFactor:   1,
 	})
 
-	// With BurstFactor=1, initial tokens = rps = max(200, 40) = 200
-	// Consuming 150 tokens should succeed (below the 200-token ceiling)
-	for i := 0; i < 150; i++ {
-		l.main[domain.NetworkSafaricom] // just verify the map exists without consuming retry tokens
-	}
-
 	// Retry tokens for Safaricom should equal max(sdp, smpp) = 200
 	retryTokens := l.retry[domain.NetworkSafaricom].Tokens()
 	if retryTokens < float64(smpp) {

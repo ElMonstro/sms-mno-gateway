@@ -33,7 +33,7 @@ func TestConsumer_ParseMessages_Batch(t *testing.T) {
 		t.Fatalf("Failed to marshal test messages: %v", err)
 	}
 
-	parsed, err := c.parseMessages(body)
+	parsed, err := c.parseMessages(body, "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}
@@ -67,7 +67,7 @@ func TestConsumer_ParseMessages_SingleMessage(t *testing.T) {
 		t.Fatalf("Failed to marshal test message: %v", err)
 	}
 
-	parsed, err := c.parseMessages(body)
+	parsed, err := c.parseMessages(body, "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestConsumer_ParseMessages_WithAllFields(t *testing.T) {
 		t.Fatalf("Failed to marshal: %v", err)
 	}
 
-	parsed, err := c.parseMessages(body)
+	parsed, err := c.parseMessages(body, "test-queue")
 	if err != nil {
 		t.Fatalf("parseMessages() error = %v", err)
 	}
