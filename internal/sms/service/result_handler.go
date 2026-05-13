@@ -9,35 +9,46 @@ import (
 )
 
 // ResultHandler handles the routing of send results to appropriate queues
-// This addresses EM-149: Route permanent failures to DLQ
 type ResultHandler struct {
-	publisher  ports.QueuePublisher
-	metrics    ports.Metrics
-	maxRetries int
-	log        logger.Logger
+	publisher               ports.QueuePublisher
+	metrics                 ports.Metrics
+	maxRetriesTransactional int
+	maxRetriesPromotional   int
+	log                     logger.Logger
 }
 
 // ResultHandlerConfig holds configuration for the result handler
 type ResultHandlerConfig struct {
-	Publisher  ports.QueuePublisher
-	Metrics    ports.Metrics
-	MaxRetries int
-	Logger     logger.Logger
+	Publisher               ports.QueuePublisher
+	Metrics                 ports.Metrics
+	MaxRetriesTransactional int
+	MaxRetriesPromotional   int
+	Logger                  logger.Logger
 }
 
 // NewResultHandler creates a new result handler
 func NewResultHandler(cfg *ResultHandlerConfig) *ResultHandler {
 	return &ResultHandler{
-		publisher:  cfg.Publisher,
-		metrics:    cfg.Metrics,
-		maxRetries: cfg.MaxRetries,
-		log:        cfg.Logger,
+		publisher:               cfg.Publisher,
+		metrics:                 cfg.Metrics,
+		maxRetriesTransactional: cfg.MaxRetriesTransactional,
+		maxRetriesPromotional:   cfg.MaxRetriesPromotional,
+		log:                     cfg.Logger,
 	}
+}
+
+// maxRetries returns the retry limit for the given message based on its type.
+func (h *ResultHandler) maxRetries(msg *domain.Message) int {
+	if msg.IsTransactional() {
+		return h.maxRetriesTransactional
+	}
+	return h.maxRetriesPromotional
 }
 
 // HandleResult processes a single send result and publishes to the appropriate queue
 func (h *ResultHandler) HandleResult(ctx context.Context, result *domain.SendResult) error {
 	network := result.Message.Network()
+	limit := h.maxRetries(result.Message)
 
 	switch result.Type {
 	case domain.ResultSuccess:
@@ -52,17 +63,15 @@ func (h *ResultHandler) HandleResult(ctx context.Context, result *domain.SendRes
 		}
 
 	case domain.ResultRetryable:
-		// Check if we've exceeded max retries
-		if result.Message.RetryCount >= h.maxRetries {
+		if result.Message.RetryCount >= limit {
 			h.log.WithFields(map[string]interface{}{
 				"correlator":  result.Message.Correlator,
 				"network":     network.String(),
 				"retry_count": result.Message.RetryCount,
-				"max_retries": h.maxRetries,
+				"max_retries": limit,
 				"error":       result.Error.Error(),
 			}).Warn("Message exceeded max retries, routing to DLQ")
 
-			// Change result type to permanent failure
 			result.Type = domain.ResultPermanent
 			result.Message.SetError(domain.ErrMaxRetriesExceeded)
 
@@ -95,32 +104,29 @@ func (h *ResultHandler) HandleResult(ctx context.Context, result *domain.SendRes
 		}
 	}
 
-	// Publish to appropriate queue
 	return h.publisher.PublishResult(ctx, result)
 }
 
 // HandleBatchResults processes a batch of send results
 func (h *ResultHandler) HandleBatchResults(ctx context.Context, results *domain.BatchResult) error {
-	// Check retryable messages against max retries
 	for i := len(results.Retryable) - 1; i >= 0; i-- {
 		result := results.Retryable[i]
-		if result.Message.RetryCount >= h.maxRetries {
-			// Move to failed
+		limit := h.maxRetries(result.Message)
+
+		if result.Message.RetryCount >= limit {
 			result.Type = domain.ResultPermanent
 			result.Message.SetError(domain.ErrMaxRetriesExceeded)
 			results.Failed = append(results.Failed, result)
-
-			// Remove from retryable
 			results.Retryable = append(results.Retryable[:i], results.Retryable[i+1:]...)
 
 			h.log.WithFields(map[string]interface{}{
 				"correlator":  result.Message.Correlator,
 				"retry_count": result.Message.RetryCount,
+				"max_retries": limit,
 			}).Warn("Message exceeded max retries, moving to DLQ")
 		}
 	}
 
-	// Log summary
 	h.log.WithFields(map[string]interface{}{
 		"successful":   results.SuccessCount(),
 		"retryable":    results.RetryableCount(),
@@ -129,6 +135,5 @@ func (h *ResultHandler) HandleBatchResults(ctx context.Context, results *domain.
 		"success_rate": results.SuccessRate(),
 	}).Info("Processing batch results")
 
-	// Publish all results
 	return h.publisher.PublishBatchResults(ctx, results)
 }
