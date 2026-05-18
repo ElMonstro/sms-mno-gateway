@@ -196,6 +196,7 @@ func New(cfg *config.Config) (*App, error) {
 		RateLimiter:   app.RateLimiter,
 		Metrics:       app.Metrics,
 		WorkerCount:   cfg.App.WorkerCount,
+		SDPBatchSize:  cfg.MNO.SafaricomSDP.PromoSDPBatchSize,
 		Logger:        app.Logger,
 	})
 	app.Logger.Infof("Message processor initialized with %d workers", cfg.App.WorkerCount)

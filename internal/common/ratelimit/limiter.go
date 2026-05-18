@@ -157,6 +157,26 @@ func (l *Limiter) WaitRetry(ctx context.Context, network domain.Network) error {
 	return limiter.Wait(ctx)
 }
 
+// WaitN blocks until the main rate limiter allows n events for the network.
+// It consumes n tokens in one call, which is equivalent to calling Wait n times
+// but more efficient for batch sends. Callers must ensure n does not exceed the
+// burst cap (equal to the per-second rate limit); use min(n, burstCap) if unsure.
+func (l *Limiter) WaitN(ctx context.Context, network domain.Network, n int) error {
+	limiter := l.getMainLimiter(network)
+	return limiter.WaitN(ctx, n)
+}
+
+// WaitRetryN is WaitN for the retry budget.
+func (l *Limiter) WaitRetryN(ctx context.Context, network domain.Network, n int) error {
+	l.mu.RLock()
+	limiter, ok := l.retry[network]
+	if !ok {
+		limiter = l.retry[domain.NetworkUnknown]
+	}
+	l.mu.RUnlock()
+	return limiter.WaitN(ctx, n)
+}
+
 // Allow returns true if an event may happen now for the network on the main queue.
 // This is non-blocking.
 func (l *Limiter) Allow(network domain.Network) bool {

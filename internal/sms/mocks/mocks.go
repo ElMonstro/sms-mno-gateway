@@ -67,19 +67,97 @@ func (m *MockMNOSender) GetSentMessages() []*domain.Message {
 	return m.SentMessages
 }
 
+// MockBatchSender implements both ports.MNOSender and ports.BatchSender.
+// Use it to test the SDP promotional batch path in the processor.
+type MockBatchSender struct {
+	mu            sync.Mutex
+	name          string
+	network       domain.Network
+	healthy       bool
+	SendCalls     []*domain.Message
+	BatchCalls    []int               // size of each SendBatch call
+	BatchMessages [][]*domain.Message // messages passed in each SendBatch call
+	SendBatchFunc func(ctx context.Context, msgs []*domain.Message) []*domain.SendResult
+}
+
+func NewMockBatchSender(name string, network domain.Network) *MockBatchSender {
+	return &MockBatchSender{name: name, network: network, healthy: true}
+}
+
+func (m *MockBatchSender) Send(ctx context.Context, msg *domain.Message) *domain.SendResult {
+	m.mu.Lock()
+	m.SendCalls = append(m.SendCalls, msg)
+	m.mu.Unlock()
+	return domain.NewSuccessResult(msg, "mock-batch-send", 10*time.Millisecond)
+}
+
+func (m *MockBatchSender) Name() string             { return m.name }
+func (m *MockBatchSender) Network() domain.Network  { return m.network }
+func (m *MockBatchSender) IsHealthy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.healthy
+}
+
+func (m *MockBatchSender) SendBatch(ctx context.Context, msgs []*domain.Message) []*domain.SendResult {
+	m.mu.Lock()
+	m.BatchCalls = append(m.BatchCalls, len(msgs))
+	batch := make([]*domain.Message, len(msgs))
+	copy(batch, msgs)
+	m.BatchMessages = append(m.BatchMessages, batch)
+	m.mu.Unlock()
+
+	if m.SendBatchFunc != nil {
+		return m.SendBatchFunc(ctx, msgs)
+	}
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = domain.NewSuccessResult(msg, "mock-batch", 10*time.Millisecond)
+	}
+	return results
+}
+
+func (m *MockBatchSender) GetBatchCalls() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int(nil), m.BatchCalls...)
+}
+
+func (m *MockBatchSender) GetBatchMessages() [][]*domain.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([][]*domain.Message, len(m.BatchMessages))
+	for i, batch := range m.BatchMessages {
+		result[i] = append([]*domain.Message(nil), batch...)
+	}
+	return result
+}
+
+func (m *MockBatchSender) GetSendCalls() []*domain.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*domain.Message(nil), m.SendCalls...)
+}
+
 // MockMNOSenderFactory is a mock implementation of ports.MNOSenderFactory
 type MockMNOSenderFactory struct {
 	mu      sync.Mutex
-	senders map[domain.Network]*MockMNOSender
+	senders map[domain.Network]ports.MNOSender
 }
 
 func NewMockMNOSenderFactory() *MockMNOSenderFactory {
 	return &MockMNOSenderFactory{
-		senders: make(map[domain.Network]*MockMNOSender),
+		senders: make(map[domain.Network]ports.MNOSender),
 	}
 }
 
 func (f *MockMNOSenderFactory) RegisterSender(sender *MockMNOSender) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.senders[sender.network] = sender
+}
+
+func (f *MockMNOSenderFactory) RegisterBatchSender(sender *MockBatchSender) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.senders[sender.network] = sender

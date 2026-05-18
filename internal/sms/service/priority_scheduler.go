@@ -56,12 +56,12 @@ type PriorityScheduler struct {
 
 // queueState tracks per-queue scheduling state
 type queueState struct {
-	name          string
-	weight        int
-	credits       chan struct{} // Buffered channel as credit semaphore
-	lastProcessed time.Time
-	pendingCount  atomic.Int64
-	creditsMu     sync.Mutex // Protects credit channel recreation
+	name              string
+	weight            int
+	credits           chan struct{} // Buffered channel as credit semaphore
+	lastProcessedNano atomic.Int64 // UnixNano of last processed time; updated atomically
+	pendingCount      atomic.Int64
+	creditsMu         sync.Mutex // Protects credit channel recreation
 }
 
 // PrioritySchedulerConfig holds configuration for the scheduler
@@ -338,7 +338,7 @@ func (s *PriorityScheduler) refillQueueCredits(qs *queueState) {
 // Returns nil on success, context error if cancelled, or grants immediate credit on starvation
 func (s *PriorityScheduler) acquireCredit(ctx context.Context, qs *queueState) error {
 	// Check for starvation - if queue hasn't processed in too long, grant immediate credit
-	timeSinceLastProcess := time.Since(qs.lastProcessed)
+	timeSinceLastProcess := time.Since(time.Unix(0, qs.lastProcessedNano.Load()))
 	if timeSinceLastProcess > s.maxStarvationAge {
 		s.starvationEvents.Add(1)
 		if s.metrics != nil {
@@ -406,11 +406,11 @@ func (s *PriorityScheduler) getOrCreateQueueState(queueName string) *queueState 
 		}
 
 		qs = &queueState{
-			name:          queueName,
-			weight:        weight,
-			credits:       credits,
-			lastProcessed: time.Now(),
+			name:    queueName,
+			weight:  weight,
+			credits: credits,
 		}
+		qs.lastProcessedNano.Store(time.Now().UnixNano())
 		s.queues[queueName] = qs
 		s.processedByQueue[queueName] = &atomic.Uint64{}
 
@@ -449,12 +449,15 @@ func (s *PriorityScheduler) ProcessMessages(ctx context.Context, messages []*dom
 	// Process via the processor
 	result, err := s.processor.ProcessMessages(ctx, messages)
 
-	// Update stats
-	if counter, ok := s.processedByQueue[queueName]; ok {
+	// Update stats — RLock protects the map read; the counter itself is atomic.
+	s.mu.RLock()
+	counter, ok := s.processedByQueue[queueName]
+	s.mu.RUnlock()
+	if ok {
 		counter.Add(uint64(len(messages)))
 	}
 	s.totalProcessed.Add(uint64(len(messages)))
-	qs.lastProcessed = time.Now()
+	qs.lastProcessedNano.Store(time.Now().UnixNano())
 
 	// Emit metrics
 	if s.metrics != nil {

@@ -29,6 +29,7 @@ type SafaricomSDPSender struct {
 	dlrURLApiV2    string
 	tokenKey       string
 	tokenTTL       time.Duration
+	batchSize      int
 	tokenCache     ports.TokenCache
 	httpClient     *httpclient.Client
 	circuitBreaker *circuitbreaker.CircuitBreaker
@@ -48,6 +49,7 @@ type SDPConfig struct {
 	DLRURLApiV2    string
 	TokenKey       string
 	TokenTTL       time.Duration
+	BatchSize      int
 	TokenCache     ports.TokenCache
 	HTTPClient     *httpclient.Client
 	CircuitBreaker *circuitbreaker.CircuitBreaker
@@ -92,6 +94,11 @@ func NewSafaricomSDPSender(cfg *SDPConfig) *SafaricomSDPSender {
 		authUsername = cfg.Username
 	}
 
+	batchSize := cfg.BatchSize
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
 	return &SafaricomSDPSender{
 		authURL:        cfg.AuthURL,
 		sendURL:        cfg.SendURL,
@@ -103,6 +110,7 @@ func NewSafaricomSDPSender(cfg *SDPConfig) *SafaricomSDPSender {
 		dlrURLApiV2:    cfg.DLRURLApiV2,
 		tokenKey:       cfg.TokenKey,
 		tokenTTL:       cfg.TokenTTL,
+		batchSize:      batchSize,
 		tokenCache:     cfg.TokenCache,
 		httpClient:     cfg.HTTPClient,
 		circuitBreaker: cfg.CircuitBreaker,
@@ -167,15 +175,13 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	}
 
 	// Build request payload
-	packageID := uint64(0)
-
 	payload := SDPSendRequest{
 		TimeStamp: time.Now().Unix(),
 		DataSet: []SDPSMSRecord{
 			{
 				UserName:          s.username,
 				Channel:           "sms",
-				PackageID:         packageID,
+				PackageID:         0,
 				OA:                msg.Sender,
 				MSISDN:            msg.NormalizeMSISDN(),
 				Message:           msg.Content,
@@ -290,6 +296,186 @@ func (s *SafaricomSDPSender) resolveDLRURL(msg *domain.Message) string {
 		"dlr_url":      s.dlrURL,
 	}).Debug("SDP using primary DLR URL")
 	return s.dlrURL
+}
+
+// SendBatch sends multiple promotional messages in a single SDP API call.
+// The SDP API returns one response for the entire DataSet — success or failure
+// applies to all messages in the batch.
+// Implements ports.BatchSender.
+func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Message) []*domain.SendResult {
+	start := time.Now()
+
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	// Defensive check: all messages must share the same sender (oa) value.
+	// The SDP DataSet API requires a homogeneous oa across all records in one call.
+	// processSdpBatch already groups by sender; this guards against programming errors.
+	if len(msgs) > 1 {
+		firstSender := msgs[0].Sender
+		for i := 1; i < len(msgs); i++ {
+			if msgs[i].Sender != firstSender {
+				mixedErr := fmt.Errorf("SDP batch contains mixed senders: %q (index 0) vs %q (index %d) — each DataSet must use a single oa value", firstSender, msgs[i].Sender, i)
+				s.log.WithError(mixedErr).Error("Rejecting SDP batch with mixed senders")
+				return s.allPermanent(msgs, mixedErr, time.Since(start))
+			}
+		}
+	}
+
+	// Circuit breaker: if open, fail all immediately without an HTTP call
+	if s.circuitBreaker != nil && s.circuitBreaker.IsOpen() {
+		s.log.WithField("network", domain.NetworkSafaricom).Warn("Circuit breaker is open, rejecting SDP batch")
+		return s.allRetryable(msgs, domain.ErrCircuitOpen, time.Since(start))
+	}
+
+	token, err := s.getToken(ctx)
+	if err != nil {
+		s.log.WithError(err).Error("Failed to get SDP token for batch")
+		return s.allRetryable(msgs, domain.ErrTokenFetchFail, time.Since(start))
+	}
+
+	// Build DataSet with one record per message
+	records := make([]SDPSMSRecord, len(msgs))
+	for i, msg := range msgs {
+		records[i] = SDPSMSRecord{
+			UserName:          s.username,
+			Channel:           "sms",
+			PackageID:         0,
+			OA:                msg.Sender,
+			MSISDN:            msg.NormalizeMSISDN(),
+			Message:           msg.Content,
+			UniqueID:          msg.Correlator,
+			ActionResponseURL: s.resolveDLRURL(msg),
+		}
+	}
+
+	payload := SDPSendRequest{
+		TimeStamp: time.Now().Unix(),
+		DataSet:   records,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		s.log.WithError(err).Error("Failed to marshal SDP batch payload")
+		return s.allPermanent(msgs, err, time.Since(start))
+	}
+
+	correlators := make([]string, len(msgs))
+	for i, msg := range msgs {
+		correlators[i] = msg.Correlator
+	}
+	s.log.WithFields(map[string]interface{}{
+		"count":       len(msgs),
+		"url":         s.sendURL,
+		"correlators": correlators,
+		"payload":     string(payloadBytes),
+	}).Debug("SDP batch send request payload")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sendURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		s.log.WithError(err).Error("Failed to create SDP batch request")
+		return s.allPermanent(msgs, err, time.Since(start))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Authorization", "Bearer "+token)
+	if s.countryPrefix != "" {
+		req.Header.Set("X-Country", s.countryPrefix)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.log.WithError(err).Error("SDP batch request failed")
+		return s.allRetryable(msgs, domain.ErrMNOUnavailable, time.Since(start))
+	}
+	defer httpclient.DrainBody(resp)
+
+	body, _ := io.ReadAll(resp.Body)
+	responseStr := string(body)
+	latency := time.Since(start)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		s.log.WithFields(map[string]interface{}{
+			"network":     domain.NetworkSafaricom,
+			"count":       len(msgs),
+			"status_code": resp.StatusCode,
+			"latency_ms":  latency.Milliseconds(),
+		}).Info("SDP batch sent successfully")
+
+		results := make([]*domain.SendResult, len(msgs))
+		for i, msg := range msgs {
+			results[i] = domain.NewSuccessResult(msg, responseStr, latency)
+			if s.metrics != nil {
+				s.metrics.IncMessagesProcessed(domain.NetworkSafaricom, "success")
+			}
+		}
+		return results
+	}
+
+	// 401: token expired — clear cache and return all as retryable
+	if resp.StatusCode == http.StatusUnauthorized {
+		s.log.Warn("SDP batch: token expired, clearing cache")
+		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
+			s.log.WithError(err).Warn("Failed to delete expired token from cache")
+		}
+		return s.allRetryable(msgs, domain.ErrTokenExpired, latency)
+	}
+
+	mnoErr := domain.NewMNOError(domain.NetworkSafaricom, resp.StatusCode, responseStr, nil)
+
+	s.log.WithFields(map[string]interface{}{
+		"network":     domain.NetworkSafaricom,
+		"count":       len(msgs),
+		"status_code": resp.StatusCode,
+		"response":    responseStr,
+		"url":         s.sendURL,
+	}).Error("SDP batch rejected by MNO")
+
+	// 404 from the SDP gateway ("no Route matched with those values") means the batch
+	// endpoint rejected the multi-record payload. Fall back to per-message sends so
+	// messages are not permanently dropped to the DLQ while the root cause is investigated.
+	if resp.StatusCode == http.StatusNotFound {
+		s.log.WithField("count", len(msgs)).Warn("SDP batch got 404, falling back to per-message sends")
+		results := make([]*domain.SendResult, len(msgs))
+		for i, msg := range msgs {
+			results[i] = s.executeSend(ctx, msg, time.Now())
+		}
+		return results
+	}
+
+	if mnoErr.IsRetryable() {
+		return s.allRetryable(msgs, mnoErr, latency)
+	}
+	return s.allPermanent(msgs, mnoErr, latency)
+}
+
+// allRetryable returns a retryable SendResult for every message in the slice.
+func (s *SafaricomSDPSender) allRetryable(msgs []*domain.Message, err error, latency time.Duration) []*domain.SendResult {
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = domain.NewRetryableResult(msg, err, latency)
+		if s.metrics != nil {
+			s.metrics.IncMessagesProcessed(domain.NetworkSafaricom, "failed")
+		}
+	}
+	return results
+}
+
+// allPermanent returns a permanent SendResult for every message in the slice.
+func (s *SafaricomSDPSender) allPermanent(msgs []*domain.Message, err error, latency time.Duration) []*domain.SendResult {
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = domain.NewPermanentResult(msg, err, latency)
+		if s.metrics != nil {
+			s.metrics.IncMessagesProcessed(domain.NetworkSafaricom, "failed")
+		}
+	}
+	return results
+}
+
+// BatchSize returns the configured batch size for this sender.
+func (s *SafaricomSDPSender) BatchSize() int {
+	return s.batchSize
 }
 
 // getToken retrieves the authentication token, using cache when possible

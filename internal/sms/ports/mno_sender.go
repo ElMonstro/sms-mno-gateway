@@ -21,6 +21,14 @@ type MNOSender interface {
 	IsHealthy() bool
 }
 
+// BatchSender is an optional capability for MNO senders that support sending
+// multiple messages in a single API call. Processors detect this capability
+// via a type assertion and use it for eligible messages only.
+// A single API response (success or failure) applies to all messages in the batch.
+type BatchSender interface {
+	SendBatch(ctx context.Context, msgs []*domain.Message) []*domain.SendResult
+}
+
 // MNOSenderFactory creates MNO senders based on network and message type
 type MNOSenderFactory interface {
 	// GetSender returns the appropriate sender for the given message

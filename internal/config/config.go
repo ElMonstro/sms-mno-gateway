@@ -115,16 +115,17 @@ type MNOConfig struct {
 
 // SDPConfig holds Safaricom SDP configuration
 type SDPConfig struct {
-	AuthURL       string
-	SendURL       string
-	AuthUser      string
-	CountryPrefix string
-	Username      string
-	Password      string
-	DLRURL        string
-	DLRURLApiV2   string
-	TokenKey      string
-	TokenTTL      time.Duration
+	AuthURL          string
+	SendURL          string
+	AuthUser         string
+	CountryPrefix    string
+	Username         string
+	Password         string
+	DLRURL           string
+	DLRURLApiV2      string
+	TokenKey         string
+	TokenTTL         time.Duration
+	PromoSDPBatchSize int
 }
 
 // SMPPConfig holds SMPP (Kannel) gateway configuration
@@ -220,10 +221,11 @@ func Load() *Config {
 				CountryPrefix: getEnv("COUNTRY_PREFIX", ""),
 				Username:      getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
 				Password:      getEnv("SDP_PASSWORD", ""),
-				DLRURL:        getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
-				DLRURLApiV2:   getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
-				TokenKey:      getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
-				TokenTTL:      getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
+				DLRURL:           getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
+				DLRURLApiV2:      getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
+				TokenKey:         getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
+				TokenTTL:         getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
+				PromoSDPBatchSize: getEnvAsInt("SDP_PROMO_BATCH_SIZE", 1),
 			},
 			SafaricomSMPP: SMPPConfig{
 				URL:         getEnv("SAFARICOM_SMPP_URL", "http://10.0.0.87:80/cgi-bin/sendsms"),
