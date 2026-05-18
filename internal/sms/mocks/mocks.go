@@ -75,7 +75,8 @@ type MockBatchSender struct {
 	network       domain.Network
 	healthy       bool
 	SendCalls     []*domain.Message
-	BatchCalls    []int // size of each SendBatch call
+	BatchCalls    []int               // size of each SendBatch call
+	BatchMessages [][]*domain.Message // messages passed in each SendBatch call
 	SendBatchFunc func(ctx context.Context, msgs []*domain.Message) []*domain.SendResult
 }
 
@@ -101,6 +102,9 @@ func (m *MockBatchSender) IsHealthy() bool {
 func (m *MockBatchSender) SendBatch(ctx context.Context, msgs []*domain.Message) []*domain.SendResult {
 	m.mu.Lock()
 	m.BatchCalls = append(m.BatchCalls, len(msgs))
+	batch := make([]*domain.Message, len(msgs))
+	copy(batch, msgs)
+	m.BatchMessages = append(m.BatchMessages, batch)
 	m.mu.Unlock()
 
 	if m.SendBatchFunc != nil {
@@ -117,6 +121,16 @@ func (m *MockBatchSender) GetBatchCalls() []int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]int(nil), m.BatchCalls...)
+}
+
+func (m *MockBatchSender) GetBatchMessages() [][]*domain.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([][]*domain.Message, len(m.BatchMessages))
+	for i, batch := range m.BatchMessages {
+		result[i] = append([]*domain.Message(nil), batch...)
+	}
+	return result
 }
 
 func (m *MockBatchSender) GetSendCalls() []*domain.Message {
