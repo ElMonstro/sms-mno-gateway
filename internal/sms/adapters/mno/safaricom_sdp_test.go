@@ -591,6 +591,49 @@ func TestSendBatch_DefaultBatchSizeIsOne(t *testing.T) {
 	}
 }
 
+// TestSendBatch_NotFound_FallsBackToPerMessage verifies that a 404 from the batch
+// endpoint triggers per-message fallback sends instead of dropping all messages to the DLQ.
+func TestSendBatch_NotFound_FallsBackToPerMessage(t *testing.T) {
+	tokenCache := NewMockTokenCache()
+	tokenCache.SetToken("test_token_key", "valid-token")
+
+	var requestPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req SDPSendRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		requestPaths = append(requestPaths, fmt.Sprintf("%s(%d)", r.URL.Path, len(req.DataSet)))
+
+		if len(req.DataSet) > 1 {
+			// Simulate the SDP gateway rejecting multi-record DataSets
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message":"no Route matched with those values"}`))
+			return
+		}
+		// Individual sends succeed
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer server.Close()
+
+	sender := newSDPSenderForTest(server.URL, tokenCache, 3)
+	msgs := newSDPTestMessages(3)
+
+	results := sender.SendBatch(context.Background(), msgs)
+
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 results after fallback, got %d", len(results))
+	}
+	for i, r := range results {
+		if !r.IsSuccess() {
+			t.Errorf("result[%d] expected success after per-message fallback, got %v (err: %v)", i, r.Type, r.Error)
+		}
+	}
+	// First request was the batch (3 records), then 3 individual sends (1 record each)
+	if len(requestPaths) != 4 {
+		t.Errorf("Expected 4 HTTP requests (1 batch + 3 individual), got %d: %v", len(requestPaths), requestPaths)
+	}
+}
+
 // TestSendBatch_MixedSenders_AllPermanent verifies that SendBatch rejects batches
 // where messages have different Sender (oa) values, returning permanent errors for
 // all messages without making an HTTP call.

@@ -428,7 +428,20 @@ func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Messa
 		"count":       len(msgs),
 		"status_code": resp.StatusCode,
 		"response":    responseStr,
+		"url":         s.sendURL,
 	}).Error("SDP batch rejected by MNO")
+
+	// 404 from the SDP gateway ("no Route matched with those values") means the batch
+	// endpoint rejected the multi-record payload. Fall back to per-message sends so
+	// messages are not permanently dropped to the DLQ while the root cause is investigated.
+	if resp.StatusCode == http.StatusNotFound {
+		s.log.WithField("count", len(msgs)).Warn("SDP batch got 404, falling back to per-message sends")
+		results := make([]*domain.SendResult, len(msgs))
+		for i, msg := range msgs {
+			results[i] = s.executeSend(ctx, msg, time.Now())
+		}
+		return results
+	}
 
 	if mnoErr.IsRetryable() {
 		return s.allRetryable(msgs, mnoErr, latency)
