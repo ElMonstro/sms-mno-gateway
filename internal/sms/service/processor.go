@@ -301,11 +301,12 @@ func (p *Processor) worker(ctx context.Context, id int, msgs <-chan *domain.Mess
 
 // processMessage processes a single message
 func (p *Processor) processMessage(ctx context.Context, msg *domain.Message) *domain.SendResult {
+	// Clone so this worker has exclusive ownership of the message pointer.
+	// NewRetryableResult / NewSuccessResult mutate the message (SetError, SetStatus),
+	// and two workers can receive the same *Message when callers reuse slices.
+	msg = msg.Clone()
 	start := time.Now()
 	network := msg.Network()
-
-	// Normalize MSISDN
-	msg.MSISDN = msg.NormalizeMSISDN()
 
 	// Validate message
 	if err := msg.Validate(); err != nil {
