@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -206,6 +207,156 @@ func TestProcessor_ProcessMessages_NoAck(t *testing.T) {
 	}
 	if len(pub.GetPublishedItems()) != 2 {
 		t.Errorf("Expected 2 published results, got %d", len(pub.GetPublishedItems()))
+	}
+}
+
+// newTestBatchProcessor creates a Processor wired with a MockBatchSender for
+// Safaricom (implements both MNOSender and BatchSender) at the given sdpBatchSize.
+func newTestBatchProcessor(t *testing.T, batchSize int) (*Processor, *mocks.MockQueuePublisher, *mocks.MockBatchSender) {
+	t.Helper()
+
+	log := logger.NewNoop()
+	pub := mocks.NewMockQueuePublisher()
+	metr := mocks.NewMockMetrics()
+
+	factory := mocks.NewMockMNOSenderFactory()
+	batchSender := mocks.NewMockBatchSender("safaricom-sdp", domain.NetworkSafaricom)
+	factory.RegisterBatchSender(batchSender)
+
+	router := NewRouter(factory, log)
+	handler := NewResultHandler(&ResultHandlerConfig{
+		Publisher:               pub,
+		Metrics:                 metr,
+		MaxRetriesTransactional: 5,
+		MaxRetriesPromotional:   10,
+		Logger:                  log,
+	})
+
+	p := NewProcessor(&ProcessorConfig{
+		Router:        router,
+		ResultHandler: handler,
+		RateLimiter:   generousLimiter(),
+		Metrics:       metr,
+		WorkerCount:   10,
+		SDPBatchSize:  batchSize,
+		Logger:        log,
+	})
+
+	return p, pub, batchSender
+}
+
+// TestProcessor_SDPBatch_GroupingSeparatesPromoFromRegular verifies that processBatch
+// routes promotional Safaricom messages to the BatchSender path while transactional
+// Safaricom messages use the regular per-message worker path.
+func TestProcessor_SDPBatch_GroupingSeparatesPromoFromRegular(t *testing.T) {
+	// batchSize=10 so all 3 promo messages land in a single SendBatch call.
+	p, pub, batchSender := newTestBatchProcessor(t, 10)
+
+	promoMsgs := []*domain.Message{validMsg("p1"), validMsg("p2"), validMsg("p3")}
+	txMsgs := []*domain.Message{
+		{Correlator: "t1", Content: "msg", MSISDN: "254722123456", NetworkRaw: "SAFARICOM", Sender: "S", PackageID: "TRANSACTIONAL"},
+		{Correlator: "t2", Content: "msg", MSISDN: "254722654321", NetworkRaw: "SAFARICOM", Sender: "S", PackageID: "TRANSACTIONAL"},
+	}
+	delivery := mocks.NewMockDeliveryWithMessages(append(promoMsgs, txMsgs...))
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("ProcessDelivery() error = %v", err)
+	}
+
+	// SendBatch must be called once with all 3 promotional messages.
+	batchCalls := batchSender.GetBatchCalls()
+	if len(batchCalls) != 1 {
+		t.Errorf("Expected 1 SendBatch call, got %d", len(batchCalls))
+	} else if batchCalls[0] != 3 {
+		t.Errorf("Expected SendBatch call with 3 messages, got %d", batchCalls[0])
+	}
+
+	// 2 transactional messages must be routed to individual Send calls.
+	sendCalls := batchSender.GetSendCalls()
+	if len(sendCalls) != 2 {
+		t.Errorf("Expected 2 individual Send calls for transactional messages, got %d", len(sendCalls))
+	}
+
+	// All 5 results must be published.
+	if len(pub.GetPublishedItems()) != 5 {
+		t.Errorf("Expected 5 published results, got %d", len(pub.GetPublishedItems()))
+	}
+}
+
+// TestProcessor_SDPBatch_ChunkSizeRespected verifies that 10 promotional messages
+// with sdpBatchSize=4 produce exactly 3 SendBatch calls with sizes [4, 4, 2].
+func TestProcessor_SDPBatch_ChunkSizeRespected(t *testing.T) {
+	p, pub, batchSender := newTestBatchProcessor(t, 4)
+
+	msgs := make([]*domain.Message, 10)
+	for i := range msgs {
+		msgs[i] = validMsg(fmt.Sprintf("promo-%d", i))
+	}
+	delivery := mocks.NewMockDeliveryWithMessages(msgs)
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("ProcessDelivery() error = %v", err)
+	}
+
+	batchCalls := batchSender.GetBatchCalls()
+	if len(batchCalls) != 3 {
+		t.Fatalf("Expected 3 SendBatch calls, got %d: %v", len(batchCalls), batchCalls)
+	}
+	for i, want := range []int{4, 4, 2} {
+		if batchCalls[i] != want {
+			t.Errorf("SendBatch call %d: expected size %d, got %d", i, want, batchCalls[i])
+		}
+	}
+	if len(pub.GetPublishedItems()) != 10 {
+		t.Errorf("Expected 10 published results, got %d", len(pub.GetPublishedItems()))
+	}
+}
+
+// TestProcessor_SDPBatch_FallbackWhenNotBatchSender verifies that when the Safaricom
+// sender does not implement BatchSender, the processor falls back to the per-message
+// worker pool and calls Send for each promotional message.
+func TestProcessor_SDPBatch_FallbackWhenNotBatchSender(t *testing.T) {
+	log := logger.NewNoop()
+	pub := mocks.NewMockQueuePublisher()
+	metr := mocks.NewMockMetrics()
+
+	factory := mocks.NewMockMNOSenderFactory()
+	plainSender := mocks.NewMockMNOSender("safaricom-sdp", domain.NetworkSafaricom)
+	factory.RegisterSender(plainSender)
+
+	router := NewRouter(factory, log)
+	handler := NewResultHandler(&ResultHandlerConfig{
+		Publisher:               pub,
+		Metrics:                 metr,
+		MaxRetriesTransactional: 5,
+		MaxRetriesPromotional:   10,
+		Logger:                  log,
+	})
+
+	p := NewProcessor(&ProcessorConfig{
+		Router:        router,
+		ResultHandler: handler,
+		RateLimiter:   generousLimiter(),
+		Metrics:       metr,
+		WorkerCount:   10,
+		SDPBatchSize:  2, // >1 triggers batch classification path
+		Logger:        log,
+	})
+
+	msgs := []*domain.Message{validMsg("fb-1"), validMsg("fb-2"), validMsg("fb-3")}
+	delivery := mocks.NewMockDeliveryWithMessages(msgs)
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("ProcessDelivery() error = %v", err)
+	}
+
+	// All 3 messages must be sent via individual Send (fallback path).
+	sent := plainSender.GetSentMessages()
+	if len(sent) != 3 {
+		t.Errorf("Expected 3 individual Send calls (fallback), got %d", len(sent))
+	}
+	if len(pub.GetPublishedItems()) != 3 {
+		t.Errorf("Expected 3 published results, got %d", len(pub.GetPublishedItems()))
 	}
 }
 

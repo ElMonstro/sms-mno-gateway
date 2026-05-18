@@ -62,6 +62,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			DLRURLApiV2:    mnoCfg.SafaricomSDP.DLRURLApiV2,
 			TokenKey:       mnoCfg.SafaricomSDP.TokenKey,
 			TokenTTL:       mnoCfg.SafaricomSDP.TokenTTL,
+			BatchSize:      mnoCfg.SafaricomSDP.PromoSDPBatchSize,
 			TokenCache:     cfg.TokenCache,
 			HTTPClient:     cfg.HTTPClient,
 			CircuitBreaker: safCB,
