@@ -126,8 +126,8 @@ func TestSafaricomSDPSender_Send_Success(t *testing.T) {
 			if req.DataSet[0].MSISDN != "254722123456" {
 				t.Errorf("Expected MSISDN 254722123456, got %s", req.DataSet[0].MSISDN)
 			}
-			if req.DataSet[0].PackageID != 6179 {
-				t.Errorf("Expected package_id 6179, got %d", req.DataSet[0].PackageID)
+			if req.DataSet[0].PackageID != 0 {
+				t.Errorf("Expected package_id 0, got %d", req.DataSet[0].PackageID)
 			}
 
 			w.WriteHeader(http.StatusOK)

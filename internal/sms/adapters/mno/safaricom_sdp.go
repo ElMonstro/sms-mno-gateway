@@ -175,15 +175,13 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	}
 
 	// Build request payload
-	packageID := uint64(0)
-
 	payload := SDPSendRequest{
 		TimeStamp: time.Now().Unix(),
 		DataSet: []SDPSMSRecord{
 			{
 				UserName:          s.username,
 				Channel:           "sms",
-				PackageID:         packageID,
+				PackageID:         0,
 				OA:                msg.Sender,
 				MSISDN:            msg.NormalizeMSISDN(),
 				Message:           msg.Content,
@@ -349,10 +347,16 @@ func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Messa
 		return s.allPermanent(msgs, err, time.Since(start))
 	}
 
+	correlators := make([]string, len(msgs))
+	for i, msg := range msgs {
+		correlators[i] = msg.Correlator
+	}
 	s.log.WithFields(map[string]interface{}{
-		"count": len(msgs),
-		"url":   s.sendURL,
-	}).Debug("SDP batch send request")
+		"count":       len(msgs),
+		"url":         s.sendURL,
+		"correlators": correlators,
+		"payload":     string(payloadBytes),
+	}).Debug("SDP batch send request payload")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sendURL, bytes.NewReader(payloadBytes))
 	if err != nil {

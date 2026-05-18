@@ -217,9 +217,9 @@ func TestFactory_ListSenders(t *testing.T) {
 
 	senders := factory.ListSenders()
 
-	// Should have 6 senders: SDP, Safaricom SMPP, Airtel, Telkom, Equitel, CM
-	if len(senders) != 6 {
-		t.Errorf("Expected 6 senders, got %d", len(senders))
+	// Should have 7 senders: SDP, Safaricom SMPP, Airtel, Airtel Promo, Telkom, Equitel, CM
+	if len(senders) != 7 {
+		t.Errorf("Expected 7 senders, got %d", len(senders))
 	}
 
 	// Verify all expected senders are present
