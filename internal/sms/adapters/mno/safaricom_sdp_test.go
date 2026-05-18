@@ -590,3 +590,78 @@ func TestSendBatch_DefaultBatchSizeIsOne(t *testing.T) {
 		t.Errorf("Expected BatchSize 1 for zero input, got %d", sender.BatchSize())
 	}
 }
+
+// TestSendBatch_MixedSenders_AllPermanent verifies that SendBatch rejects batches
+// where messages have different Sender (oa) values, returning permanent errors for
+// all messages without making an HTTP call.
+func TestSendBatch_MixedSenders_AllPermanent(t *testing.T) {
+	tokenCache := NewMockTokenCache()
+	tokenCache.SetToken("test_token_key", "valid-token")
+
+	httpCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sender := newSDPSenderForTest(server.URL, tokenCache, 4)
+
+	msgs := []*domain.Message{
+		{Correlator: "m1", Content: "msg", MSISDN: "254722000001", NetworkRaw: "SAFARICOM", Sender: "SenderA"},
+		{Correlator: "m2", Content: "msg", MSISDN: "254722000002", NetworkRaw: "SAFARICOM", Sender: "SenderB"},
+		{Correlator: "m3", Content: "msg", MSISDN: "254722000003", NetworkRaw: "SAFARICOM", Sender: "SenderA"},
+	}
+
+	results := sender.SendBatch(context.Background(), msgs)
+
+	if httpCalled {
+		t.Error("HTTP request must not be made when senders are mixed")
+	}
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if !r.IsPermanent() {
+			t.Errorf("result[%d] expected permanent for mixed-sender batch, got %v", i, r.Type)
+		}
+	}
+}
+
+// TestSendBatch_SameSender_Accepted verifies that a batch where all messages share
+// the same Sender is accepted and succeeds normally.
+func TestSendBatch_SameSender_Accepted(t *testing.T) {
+	tokenCache := NewMockTokenCache()
+	tokenCache.SetToken("test_token_key", "valid-token")
+
+	var capturedOAs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req SDPSendRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		for _, rec := range req.DataSet {
+			capturedOAs = append(capturedOAs, rec.OA)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer server.Close()
+
+	sender := newSDPSenderForTest(server.URL, tokenCache, 4)
+	msgs := newSDPTestMessages(3) // all use Sender: "TestSender"
+
+	results := sender.SendBatch(context.Background(), msgs)
+
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if !r.IsSuccess() {
+			t.Errorf("result[%d] expected success, got %v", i, r.Type)
+		}
+	}
+	for i, oa := range capturedOAs {
+		if oa != "TestSender" {
+			t.Errorf("DataSet[%d].OA = %q, want %q", i, oa, "TestSender")
+		}
+	}
+}

@@ -360,6 +360,130 @@ func TestProcessor_SDPBatch_FallbackWhenNotBatchSender(t *testing.T) {
 	}
 }
 
+// TestProcessor_SDPBatch_GroupsBySender verifies that promotional messages with
+// different Sender values are split into separate SendBatch calls (one per sender),
+// ensuring each SDP DataSet contains a single homogeneous oa value.
+func TestProcessor_SDPBatch_GroupsBySender(t *testing.T) {
+	// batchSize=10: each sender group fits in one SendBatch call.
+	p, pub, batchSender := newTestBatchProcessor(t, 10)
+
+	alphaMsgs := []*domain.Message{
+		{Correlator: "a1", Content: "msg", MSISDN: "254722000001", NetworkRaw: "SAFARICOM", Sender: "Alpha"},
+		{Correlator: "a2", Content: "msg", MSISDN: "254722000002", NetworkRaw: "SAFARICOM", Sender: "Alpha"},
+		{Correlator: "a3", Content: "msg", MSISDN: "254722000003", NetworkRaw: "SAFARICOM", Sender: "Alpha"},
+	}
+	betaMsgs := []*domain.Message{
+		{Correlator: "b1", Content: "msg", MSISDN: "254722000004", NetworkRaw: "SAFARICOM", Sender: "Beta"},
+		{Correlator: "b2", Content: "msg", MSISDN: "254722000005", NetworkRaw: "SAFARICOM", Sender: "Beta"},
+	}
+	delivery := mocks.NewMockDeliveryWithMessages(append(alphaMsgs, betaMsgs...))
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("ProcessDelivery() error = %v", err)
+	}
+
+	batchCalls := batchSender.GetBatchCalls()
+	if len(batchCalls) != 2 {
+		t.Fatalf("Expected 2 SendBatch calls (one per sender), got %d: %v", len(batchCalls), batchCalls)
+	}
+	if batchCalls[0] != 3 {
+		t.Errorf("First SendBatch call (Alpha): expected 3 messages, got %d", batchCalls[0])
+	}
+	if batchCalls[1] != 2 {
+		t.Errorf("Second SendBatch call (Beta): expected 2 messages, got %d", batchCalls[1])
+	}
+
+	// Verify each batch call contains only messages with the same sender.
+	for batchIdx, batch := range batchSender.GetBatchMessages() {
+		firstSender := batch[0].Sender
+		for i, msg := range batch {
+			if msg.Sender != firstSender {
+				t.Errorf("batch[%d] message[%d] has sender %q, want %q", batchIdx, i, msg.Sender, firstSender)
+			}
+		}
+	}
+
+	if len(pub.GetPublishedItems()) != 5 {
+		t.Errorf("Expected 5 published results, got %d", len(pub.GetPublishedItems()))
+	}
+}
+
+// TestProcessor_SDPBatch_GroupsBySender_Chunked verifies that each sender group is
+// independently chunked by sdpBatchSize. With batchSize=2 and 3 messages per sender,
+// each group produces 2 SendBatch calls [2, 1], yielding 4 calls total.
+func TestProcessor_SDPBatch_GroupsBySender_Chunked(t *testing.T) {
+	p, _, batchSender := newTestBatchProcessor(t, 2)
+
+	var msgs []*domain.Message
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, &domain.Message{
+			Correlator: fmt.Sprintf("alpha-%d", i),
+			Content:    "msg",
+			MSISDN:     fmt.Sprintf("25472200000%d", i),
+			NetworkRaw: "SAFARICOM",
+			Sender:     "Alpha",
+		})
+	}
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, &domain.Message{
+			Correlator: fmt.Sprintf("beta-%d", i),
+			Content:    "msg",
+			MSISDN:     fmt.Sprintf("25472200001%d", i),
+			NetworkRaw: "SAFARICOM",
+			Sender:     "Beta",
+		})
+	}
+	delivery := mocks.NewMockDeliveryWithMessages(msgs)
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("ProcessDelivery() error = %v", err)
+	}
+
+	// Alpha: [2, 1], Beta: [2, 1] → 4 SendBatch calls
+	batchCalls := batchSender.GetBatchCalls()
+	if len(batchCalls) != 4 {
+		t.Fatalf("Expected 4 SendBatch calls, got %d: %v", len(batchCalls), batchCalls)
+	}
+	for i, want := range []int{2, 1, 2, 1} {
+		if batchCalls[i] != want {
+			t.Errorf("SendBatch call %d: expected size %d, got %d", i, want, batchCalls[i])
+		}
+	}
+}
+
+// TestGroupBySender verifies the helper directly: ordering, grouping, and empty input.
+func TestGroupBySender(t *testing.T) {
+	msgs := []*domain.Message{
+		{Correlator: "1", Sender: "A"},
+		{Correlator: "2", Sender: "B"},
+		{Correlator: "3", Sender: "A"},
+		{Correlator: "4", Sender: "C"},
+		{Correlator: "5", Sender: "B"},
+	}
+
+	groups := groupBySender(msgs)
+
+	if len(groups) != 3 {
+		t.Fatalf("Expected 3 groups, got %d", len(groups))
+	}
+	// First-seen order: A, B, C
+	wantSenders := []string{"A", "B", "C"}
+	wantSizes := []int{2, 2, 1}
+	for i, g := range groups {
+		if g[0].Sender != wantSenders[i] {
+			t.Errorf("group[%d] sender = %q, want %q", i, g[0].Sender, wantSenders[i])
+		}
+		if len(g) != wantSizes[i] {
+			t.Errorf("group[%d] size = %d, want %d", i, len(g), wantSizes[i])
+		}
+	}
+
+	// Empty input
+	if got := groupBySender(nil); len(got) != 0 {
+		t.Errorf("groupBySender(nil) should return empty, got %d groups", len(got))
+	}
+}
+
 // TestProcessor_ContextCancellation verifies that context cancellation during
 // processing does not panic — workers drain cleanly.
 func TestProcessor_ContextCancellation(t *testing.T) {

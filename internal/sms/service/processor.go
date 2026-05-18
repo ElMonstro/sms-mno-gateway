@@ -158,6 +158,7 @@ func (p *Processor) processBatch(ctx context.Context, messages []*domain.Message
 }
 
 // processSdpBatch sends promotional Safaricom messages in sub-batches via a single SDP API call each.
+// Messages are first grouped by Sender so each SDP DataSet contains a single oa value.
 // Rate limit tokens are consumed per message (N tokens per N-message batch) to preserve the TPS contract.
 func (p *Processor) processSdpBatch(
 	ctx context.Context,
@@ -165,45 +166,69 @@ func (p *Processor) processSdpBatch(
 	sender ports.BatchSender,
 	result *domain.BatchResult,
 ) {
-	for i := 0; i < len(msgs); i += p.sdpBatchSize {
-		end := i + p.sdpBatchSize
-		if end > len(msgs) {
-			end = len(msgs)
-		}
-		chunk := msgs[i:end]
+	// Group by sender so each SDP API call has a homogeneous oa field.
+	senderGroups := groupBySender(msgs)
 
-		// Consume N rate limit tokens — one per message — before the batch call.
-		var rateLimitErr error
-		if p.isRetry {
-			rateLimitErr = p.rateLimiter.WaitRetryN(ctx, domain.NetworkSafaricom, len(chunk))
-		} else {
-			rateLimitErr = p.rateLimiter.WaitN(ctx, domain.NetworkSafaricom, len(chunk))
-		}
-		if rateLimitErr != nil {
+	for _, group := range senderGroups {
+		for i := 0; i < len(group); i += p.sdpBatchSize {
+			end := i + p.sdpBatchSize
+			if end > len(group) {
+				end = len(group)
+			}
+			chunk := group[i:end]
+
+			// Consume N rate limit tokens — one per message — before the batch call.
+			var rateLimitErr error
+			if p.isRetry {
+				rateLimitErr = p.rateLimiter.WaitRetryN(ctx, domain.NetworkSafaricom, len(chunk))
+			} else {
+				rateLimitErr = p.rateLimiter.WaitN(ctx, domain.NetworkSafaricom, len(chunk))
+			}
+			if rateLimitErr != nil {
+				p.log.WithFields(map[string]interface{}{
+					"chunk_size": len(chunk),
+					"error":      rateLimitErr.Error(),
+				}).Warn("Rate limit wait failed for SDP batch chunk")
+				if p.metrics != nil {
+					p.metrics.IncRateLimitHits(domain.NetworkSafaricom)
+				}
+				for _, msg := range chunk {
+					result.AddResult(domain.NewRetryableResult(msg, domain.ErrRateLimited, 0))
+				}
+				continue
+			}
+
+			results := sender.SendBatch(ctx, chunk)
+			for _, r := range results {
+				result.AddResult(r)
+			}
+
 			p.log.WithFields(map[string]interface{}{
 				"chunk_size": len(chunk),
-				"error":      rateLimitErr.Error(),
-			}).Warn("Rate limit wait failed for SDP batch chunk")
-			if p.metrics != nil {
-				p.metrics.IncRateLimitHits(domain.NetworkSafaricom)
-			}
-			for _, msg := range chunk {
-				result.AddResult(domain.NewRetryableResult(msg, domain.ErrRateLimited, 0))
-			}
-			continue
+				"offset":     i,
+				"total":      len(group),
+				"sender":     group[0].Sender,
+			}).Debug("SDP promotional batch chunk sent")
 		}
-
-		results := sender.SendBatch(ctx, chunk)
-		for _, r := range results {
-			result.AddResult(r)
-		}
-
-		p.log.WithFields(map[string]interface{}{
-			"chunk_size": len(chunk),
-			"offset":     i,
-			"total":      len(msgs),
-		}).Debug("SDP promotional batch chunk sent")
 	}
+}
+
+// groupBySender partitions msgs into slices that share the same Sender value,
+// preserving message order within each group and first-seen sender ordering across groups.
+func groupBySender(msgs []*domain.Message) [][]*domain.Message {
+	var order []string
+	groups := make(map[string][]*domain.Message)
+	for _, msg := range msgs {
+		if _, ok := groups[msg.Sender]; !ok {
+			order = append(order, msg.Sender)
+		}
+		groups[msg.Sender] = append(groups[msg.Sender], msg)
+	}
+	result := make([][]*domain.Message, len(order))
+	for i, sender := range order {
+		result[i] = groups[sender]
+	}
+	return result
 }
 
 // processRegular processes messages individually via the existing worker pool.

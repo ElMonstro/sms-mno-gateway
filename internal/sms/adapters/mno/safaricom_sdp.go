@@ -309,6 +309,20 @@ func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Messa
 		return nil
 	}
 
+	// Defensive check: all messages must share the same sender (oa) value.
+	// The SDP DataSet API requires a homogeneous oa across all records in one call.
+	// processSdpBatch already groups by sender; this guards against programming errors.
+	if len(msgs) > 1 {
+		firstSender := msgs[0].Sender
+		for i := 1; i < len(msgs); i++ {
+			if msgs[i].Sender != firstSender {
+				mixedErr := fmt.Errorf("SDP batch contains mixed senders: %q (index 0) vs %q (index %d) — each DataSet must use a single oa value", firstSender, msgs[i].Sender, i)
+				s.log.WithError(mixedErr).Error("Rejecting SDP batch with mixed senders")
+				return s.allPermanent(msgs, mixedErr, time.Since(start))
+			}
+		}
+	}
+
 	// Circuit breaker: if open, fail all immediately without an HTTP call
 	if s.circuitBreaker != nil && s.circuitBreaker.IsOpen() {
 		s.log.WithField("network", domain.NetworkSafaricom).Warn("Circuit breaker is open, rejecting SDP batch")
