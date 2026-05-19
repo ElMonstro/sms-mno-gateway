@@ -292,6 +292,42 @@ func TestSafaricomSDPSender_Send_TokenExpired(t *testing.T) {
 	}
 }
 
+func TestSafaricomSDPSender_Send_NotFound_ClearsTokenAndRetryable(t *testing.T) {
+	tokenCache := NewMockTokenCache()
+	tokenCache.SetToken("test_token_key", "expired-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/send" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message":"no Route matched with those values"}`))
+		}
+	}))
+	defer server.Close()
+
+	sender := NewSafaricomSDPSender(&SDPConfig{
+		AuthURL:    server.URL + "/auth",
+		SendURL:    server.URL + "/send",
+		Username:   "testuser",
+		Password:   "testpass",
+		DLRURL:     "http://dlr.example.com",
+		TokenKey:   "test_token_key",
+		TokenTTL:   25 * time.Minute,
+		TokenCache: tokenCache,
+		HTTPClient: httpclient.New(httpclient.DefaultConfig()),
+		Logger:     logger.NewNoop(),
+	})
+
+	msg := newTestMessage()
+	result := sender.Send(context.Background(), msg)
+
+	if !result.IsRetryable() {
+		t.Errorf("Expected retryable for 404/expired token on single send, got %v", result.Type)
+	}
+	if _, found := tokenCache.GetStoredToken("test_token_key"); found {
+		t.Error("Token should be cleared from cache after 404")
+	}
+}
+
 func TestSafaricomSDPSender_Send_ServerError(t *testing.T) {
 	tokenCache := NewMockTokenCache()
 	tokenCache.SetToken("test_token_key", "valid-token")
@@ -591,27 +627,19 @@ func TestSendBatch_DefaultBatchSizeIsOne(t *testing.T) {
 	}
 }
 
-// TestSendBatch_NotFound_FallsBackToPerMessage verifies that a 404 from the batch
-// endpoint triggers per-message fallback sends instead of dropping all messages to the DLQ.
-func TestSendBatch_NotFound_FallsBackToPerMessage(t *testing.T) {
+// TestSendBatch_NotFound_ClearsTokenAndReturnsRetryable verifies that a 404 from the
+// SDP batch endpoint (Kong's response for an expired/invalid token) clears the token
+// cache and returns all messages as retryable — not permanently failed — so they re-enter
+// the retry queue and succeed once a fresh token is fetched.
+func TestSendBatch_NotFound_ClearsTokenAndReturnsRetryable(t *testing.T) {
 	tokenCache := NewMockTokenCache()
-	tokenCache.SetToken("test_token_key", "valid-token")
+	tokenCache.SetToken("test_token_key", "expired-token")
 
-	var requestPaths []string
+	httpCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req SDPSendRequest
-		json.NewDecoder(r.Body).Decode(&req)
-		requestPaths = append(requestPaths, fmt.Sprintf("%s(%d)", r.URL.Path, len(req.DataSet)))
-
-		if len(req.DataSet) > 1 {
-			// Simulate the SDP gateway rejecting multi-record DataSets
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"message":"no Route matched with those values"}`))
-			return
-		}
-		// Individual sends succeed
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"success"}`))
+		httpCalls++
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"no Route matched with those values"}`))
 	}))
 	defer server.Close()
 
@@ -620,17 +648,22 @@ func TestSendBatch_NotFound_FallsBackToPerMessage(t *testing.T) {
 
 	results := sender.SendBatch(context.Background(), msgs)
 
+	// Exactly one HTTP call (the batch attempt — no per-message fallback)
+	if httpCalls != 1 {
+		t.Errorf("Expected 1 HTTP call (batch only), got %d", httpCalls)
+	}
+	// All messages must be retryable so they re-enter the retry queue
 	if len(results) != 3 {
-		t.Fatalf("Expected 3 results after fallback, got %d", len(results))
+		t.Fatalf("Expected 3 results, got %d", len(results))
 	}
 	for i, r := range results {
-		if !r.IsSuccess() {
-			t.Errorf("result[%d] expected success after per-message fallback, got %v (err: %v)", i, r.Type, r.Error)
+		if !r.IsRetryable() {
+			t.Errorf("result[%d] expected retryable for 404/expired token, got %v", i, r.Type)
 		}
 	}
-	// First request was the batch (3 records), then 3 individual sends (1 record each)
-	if len(requestPaths) != 4 {
-		t.Errorf("Expected 4 HTTP requests (1 batch + 3 individual), got %d: %v", len(requestPaths), requestPaths)
+	// Token must be cleared so the next attempt fetches a fresh one
+	if _, found := tokenCache.GetStoredToken("test_token_key"); found {
+		t.Error("Token should be cleared from cache after 404")
 	}
 }
 

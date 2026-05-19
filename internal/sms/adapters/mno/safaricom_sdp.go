@@ -256,11 +256,24 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	// Handle error response
 	mnoErr := domain.NewMNOError(domain.NetworkSafaricom, resp.StatusCode, responseStr, nil)
 
-	// Check if token expired (401)
+	// 401 Unauthorized — token expired, clear cache so next call fetches a fresh one.
 	if resp.StatusCode == http.StatusUnauthorized {
-		s.log.Warn("SDP token expired, clearing cache")
+		s.log.Warn("SDP token expired (401), clearing cache")
 		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
 			s.log.WithError(err).Warn("Failed to delete expired token from cache")
+		}
+		return domain.NewRetryableResult(msg, domain.ErrTokenExpired, latency)
+	}
+
+	// 404 "no Route matched with those values" is Kong's response for an expired/invalid
+	// bearer token on this gateway — treat the same as 401.
+	if resp.StatusCode == http.StatusNotFound {
+		s.log.WithFields(map[string]interface{}{
+			"correlator": msg.Correlator,
+			"response":   responseStr,
+		}).Warn("SDP got 404 (likely expired token), clearing cache")
+		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
+			s.log.WithError(err).Warn("Failed to delete token from cache after 404")
 		}
 		return domain.NewRetryableResult(msg, domain.ErrTokenExpired, latency)
 	}
@@ -431,16 +444,20 @@ func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Messa
 		"url":         s.sendURL,
 	}).Error("SDP batch rejected by MNO")
 
-	// 404 from the SDP gateway ("no Route matched with those values") means the batch
-	// endpoint rejected the multi-record payload. Fall back to per-message sends so
-	// messages are not permanently dropped to the DLQ while the root cause is investigated.
+	// 404 "no Route matched with those values" is the Safaricom Kong gateway's response
+	// for an expired or invalid bearer token (same root cause as 401 on other routes).
+	// Clear the cached token so the next attempt fetches a fresh one, then return all
+	// messages as retryable — falling back to per-message sends with the same expired
+	// token would produce the same 404 and drop them to the DLQ.
 	if resp.StatusCode == http.StatusNotFound {
-		s.log.WithField("count", len(msgs)).Warn("SDP batch got 404, falling back to per-message sends")
-		results := make([]*domain.SendResult, len(msgs))
-		for i, msg := range msgs {
-			results[i] = s.executeSend(ctx, msg, time.Now())
+		s.log.WithFields(map[string]interface{}{
+			"count":    len(msgs),
+			"response": responseStr,
+		}).Warn("SDP batch got 404 (likely expired token), clearing cache and retrying")
+		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
+			s.log.WithError(err).Warn("Failed to delete token from cache after 404")
 		}
-		return results
+		return s.allRetryable(msgs, domain.ErrTokenExpired, latency)
 	}
 
 	if mnoErr.IsRetryable() {
@@ -489,12 +506,11 @@ func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 		return token, nil
 	}
 
-	// Fetch new token with retry
+	// Fetch new token with retry and context-aware backoff.
 	var lastErr error
 	for i := 0; i < 10; i++ {
 		token, err = s.fetchToken(ctx)
 		if err == nil {
-			// Cache the token
 			if cacheErr := s.tokenCache.Set(ctx, s.tokenKey, token, s.tokenTTL); cacheErr != nil {
 				s.log.WithError(cacheErr).Warn("Failed to cache SDP token")
 			}
@@ -502,7 +518,11 @@ func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 		}
 		lastErr = err
 		s.log.WithError(err).WithField("attempt", i+1).Warn("Token fetch failed, retrying")
-		time.Sleep(time.Duration(i+1) * time.Second) // Linear backoff
+		select {
+		case <-time.After(time.Duration(i+1) * time.Second):
+		case <-ctx.Done():
+			return "", fmt.Errorf("token fetch cancelled after %d attempts: %w", i+1, ctx.Err())
+		}
 	}
 
 	return "", fmt.Errorf("failed to fetch token after 10 attempts: %w", lastErr)
