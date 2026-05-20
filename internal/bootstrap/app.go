@@ -51,6 +51,11 @@ type App struct {
 	TransactionalHandler *service.TransactionalHandler
 	PriorityScheduler    *service.PriorityScheduler
 	MessageRouter        *service.MessageRouter
+
+	// Per-queue processors keyed by queue name (em-1102).
+	// Queues listed in QUEUE_SDP_BATCH_SIZES get a dedicated processor with that batch size.
+	// All other queues fall back to Processor.
+	QueueProcessors map[string]*service.Processor
 }
 
 // New creates and initializes all application components
@@ -189,7 +194,7 @@ func New(cfg *config.Config) (*App, error) {
 		Logger:                  app.Logger,
 	})
 
-	// 12. Initialize processor
+	// 12. Initialize processor (default — uses global SDP_PROMO_BATCH_SIZE)
 	app.Processor = service.NewProcessor(&service.ProcessorConfig{
 		Router:        app.Router,
 		ResultHandler: app.ResultHandler,
@@ -200,6 +205,24 @@ func New(cfg *config.Config) (*App, error) {
 		Logger:        app.Logger,
 	})
 	app.Logger.Infof("Message processor initialized with %d workers", cfg.App.WorkerCount)
+
+	// 12a. Per-queue processors for queues with explicit SDP batch sizes (QUEUE_SDP_BATCH_SIZES).
+	app.QueueProcessors = make(map[string]*service.Processor)
+	for queueName, batchSize := range cfg.Queues.SDPBatchSizes {
+		app.QueueProcessors[queueName] = service.NewProcessor(&service.ProcessorConfig{
+			Router:        app.Router,
+			ResultHandler: app.ResultHandler,
+			RateLimiter:   app.RateLimiter,
+			Metrics:       app.Metrics,
+			WorkerCount:   cfg.App.WorkerCount,
+			SDPBatchSize:  batchSize,
+			Logger:        app.Logger,
+		})
+		app.Logger.WithFields(map[string]interface{}{
+			"queue":      queueName,
+			"batch_size": batchSize,
+		}).Info("Per-queue SDP processor initialized")
+	}
 
 	// 13. Initialize priority routing (if enabled)
 	if cfg.Priority.Enabled {
@@ -352,6 +375,15 @@ func (app *App) Start(ctx context.Context) error {
 		}
 	}
 
+	// processorFor returns the queue-specific processor if one was configured via
+	// QUEUE_SDP_BATCH_SIZES; otherwise falls back to the default processor.
+	processorFor := func(queueName string) *service.Processor {
+		if p, ok := app.QueueProcessors[queueName]; ok {
+			return p
+		}
+		return app.Processor
+	}
+
 	// Start consuming from all queues
 	for _, consumer := range app.Consumers {
 		deliveries, err := consumer.Consume(ctx)
@@ -360,6 +392,7 @@ func (app *App) Start(ctx context.Context) error {
 		}
 
 		queueName := consumer.QueueName()
+		processor := processorFor(queueName)
 
 		// Fan out delivery processing across WorkerCount goroutines per queue.
 		// All goroutines read from the same deliveries channel (safe — Go channels are concurrent-safe).
@@ -379,17 +412,17 @@ func (app *App) Start(ctx context.Context) error {
 				}(queueName, deliveries)
 			}
 		} else {
-			// Standard processing - use Processor directly
+			// Standard processing - use per-queue processor (falls back to default)
 			app.Logger.Infof("Starting %d delivery processors for queue: %s", concurrency, queueName)
 			for i := 0; i < concurrency; i++ {
-				go func(queueName string, deliveries <-chan ports.Delivery) {
+				go func(queueName string, deliveries <-chan ports.Delivery, p *service.Processor) {
 					for delivery := range deliveries {
-						if err := app.Processor.ProcessDelivery(ctx, delivery); err != nil {
+						if err := p.ProcessDelivery(ctx, delivery); err != nil {
 							app.Logger.WithError(err).Error("Failed to process delivery")
 						}
 					}
 					app.Logger.Infof("Delivery processor stopped for queue: %s", queueName)
-				}(queueName, deliveries)
+				}(queueName, deliveries, processor)
 			}
 		}
 	}
