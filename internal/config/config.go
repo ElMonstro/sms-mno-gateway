@@ -71,6 +71,12 @@ type QueuesConfig struct {
 	// Delay queues — messages sit here for RetryDelayMs before routing to retry queues via DLX
 	TransactionalDelayQueue string
 	PromotionalDelayQueue   string
+
+	// SDPBatchSizes maps queue names to the number of promotional Safaricom messages
+	// sent per SDP API call. Format from env: "QUEUE1:50,QUEUE2:100".
+	// Queues absent from the map use the global SDP_PROMO_BATCH_SIZE default.
+	// A value of 0 or 1 disables batching for that queue.
+	SDPBatchSizes map[string]int
 }
 
 // RetryConfig holds configuration for the split retry consumer pools
@@ -212,6 +218,7 @@ func Load() *Config {
 			PromotionalRetryQueue:   getEnv("SMS_PROMOTIONAL_RETRY_QUEUE", "SMS_PROMOTIONAL_RETRY_QUEUE"),
 			TransactionalDelayQueue: getEnv("SMS_TRANSACTIONAL_DELAY_QUEUE", "SMS_TRANSACTIONAL_DELAY_QUEUE"),
 			PromotionalDelayQueue:   getEnv("SMS_PROMOTIONAL_DELAY_QUEUE", "SMS_PROMOTIONAL_DELAY_QUEUE"),
+			SDPBatchSizes:           getEnvAsQueueWeights("QUEUE_SDP_BATCH_SIZES", nil),
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{
