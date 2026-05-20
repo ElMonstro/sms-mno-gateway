@@ -411,8 +411,43 @@ func (app *App) Start(ctx context.Context) error {
 					app.Logger.Infof("Delivery processor stopped for queue: %s", queueName)
 				}(queueName, deliveries)
 			}
+		} else if batchSize := app.Config.Queues.SDPBatchSizes[queueName]; batchSize > 1 {
+			// SDP batching path: accumulate up to batchSize deliveries before making one API call.
+			// Each upstream publish is one AMQP message, so accumulation must happen here —
+			// the Processor alone cannot see across delivery boundaries.
+			app.Logger.WithFields(map[string]interface{}{
+				"queue":      queueName,
+				"batch_size": batchSize,
+				"workers":    concurrency,
+			}).Info("Starting SDP batching processors")
+			for i := 0; i < concurrency; i++ {
+				go func(queueName string, deliveries <-chan ports.Delivery, p *service.Processor, bs int) {
+					for {
+						msgs, deliveryBatch := accumulateBatch(ctx, deliveries, bs)
+						if len(msgs) == 0 {
+							app.Logger.Infof("SDP batching processor stopped for queue: %s", queueName)
+							return
+						}
+
+						_, err := p.ProcessMessages(ctx, msgs)
+						if err != nil {
+							app.Logger.WithError(err).Errorf("Failed to handle SDP batch results for %s, nacking %d deliveries", queueName, len(deliveryBatch))
+							for _, d := range deliveryBatch {
+								_ = d.Nack(true)
+							}
+							continue
+						}
+
+						for _, d := range deliveryBatch {
+							if err := d.Ack(); err != nil {
+								app.Logger.WithError(err).Errorf("Failed to ack delivery from %s", queueName)
+							}
+						}
+					}
+				}(queueName, deliveries, processor, batchSize)
+			}
 		} else {
-			// Standard processing - use per-queue processor (falls back to default)
+			// Standard single-delivery processing
 			app.Logger.Infof("Starting %d delivery processors for queue: %s", concurrency, queueName)
 			for i := 0; i < concurrency; i++ {
 				go func(queueName string, deliveries <-chan ports.Delivery, p *service.Processor) {
@@ -465,6 +500,43 @@ func (app *App) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// accumulateBatch collects up to maxMsgs messages across successive deliveries.
+// It blocks on the first delivery, then non-blocking drains further deliveries until
+// maxMsgs is reached or the channel has no immediately-available messages.
+// Returns nil slices when ctx is cancelled or the deliveries channel is closed.
+func accumulateBatch(ctx context.Context, deliveries <-chan ports.Delivery, maxMsgs int) ([]*domain.Message, []ports.Delivery) {
+	var msgs []*domain.Message
+	var batch []ports.Delivery
+
+	// Block until at least one delivery arrives.
+	select {
+	case d, ok := <-deliveries:
+		if !ok {
+			return nil, nil
+		}
+		msgs = append(msgs, d.Messages()...)
+		batch = append(batch, d)
+	case <-ctx.Done():
+		return nil, nil
+	}
+
+	// Non-blocking drain: accumulate additional deliveries that are already queued.
+	for len(msgs) < maxMsgs {
+		select {
+		case d, ok := <-deliveries:
+			if !ok {
+				return msgs, batch
+			}
+			msgs = append(msgs, d.Messages()...)
+			batch = append(batch, d)
+		default:
+			return msgs, batch
+		}
+	}
+
+	return msgs, batch
 }
 
 // Shutdown gracefully shuts down all components
