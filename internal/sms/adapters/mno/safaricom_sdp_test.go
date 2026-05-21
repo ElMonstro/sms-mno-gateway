@@ -704,6 +704,83 @@ func TestSendBatch_MixedSenders_AllPermanent(t *testing.T) {
 	}
 }
 
+// TestSendBatch_NonRetryableError_FallsBackToPerMessage verifies that when SendBatch
+// receives a non-retryable HTTP error (e.g. 403 MISSING_REQUIRED_FIELD), it falls back
+// to per-message executeSend calls rather than permanently failing every message immediately.
+// Each message is then assessed independently — if the per-message call also fails (same
+// server returns 403), the result is permanent, but via the per-message code path.
+func TestSendBatch_NonRetryableError_FallsBackToPerMessage(t *testing.T) {
+	tokenCache := NewMockTokenCache()
+	tokenCache.SetToken("test_token_key", "valid-token")
+
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"code":"MISSING_REQUIRED_FIELD","message":"partnerId is required","inError":true}`))
+	}))
+	defer server.Close()
+
+	sender := newSDPSenderForTest(server.URL, tokenCache, 2)
+	msgs := newSDPTestMessages(2)
+
+	results := sender.SendBatch(context.Background(), msgs)
+
+	if len(results) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(results))
+	}
+	// Batch call (1) + 2 per-message fallback calls = 3 total HTTP requests
+	if requestCount != 3 {
+		t.Errorf("Expected 3 HTTP requests (1 batch + 2 per-message), got %d", requestCount)
+	}
+	// Each per-message send also gets 403 permanent — messages are not silently dropped
+	for i, r := range results {
+		if !r.IsPermanent() {
+			t.Errorf("result[%d] expected permanent (403 per-message), got %v", i, r.Type)
+		}
+	}
+}
+
+// TestSendBatch_NonRetryableError_PerMessageCanSucceed verifies that when the batch
+// fails but per-message sends succeed, the results reflect the individual outcomes.
+func TestSendBatch_NonRetryableError_PerMessageCanSucceed(t *testing.T) {
+	tokenCache := NewMockTokenCache()
+	tokenCache.SetToken("test_token_key", "valid-token")
+
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var req SDPSendRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		// Fail the batch call (>1 record in DataSet), succeed per-message calls
+		if len(req.DataSet) > 1 {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"code":"MISSING_REQUIRED_FIELD","message":"partnerId is required"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer server.Close()
+
+	sender := newSDPSenderForTest(server.URL, tokenCache, 2)
+	msgs := newSDPTestMessages(2)
+
+	results := sender.SendBatch(context.Background(), msgs)
+
+	if len(results) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(results))
+	}
+	if requestCount != 3 {
+		t.Errorf("Expected 3 HTTP requests (1 batch + 2 per-message), got %d", requestCount)
+	}
+	for i, r := range results {
+		if !r.IsSuccess() {
+			t.Errorf("result[%d] expected success from per-message fallback, got %v", i, r.Type)
+		}
+	}
+}
+
 // TestSendBatch_SameSender_Accepted verifies that a batch where all messages share
 // the same Sender is accepted and succeeds normally.
 func TestSendBatch_SameSender_Accepted(t *testing.T) {
