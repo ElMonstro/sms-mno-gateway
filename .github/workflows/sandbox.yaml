@@ -1,0 +1,41 @@
+name: Build & Deploy Sandbox
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-sb'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # --- Validate Configurations --- #
+  validate:
+    runs-on: arc-runner-set
+    outputs:
+      continue: ${{ steps.values_file.outputs.values_file }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check values file exists
+        id: values_file
+        run: |
+          if test -f "env/sandbox.yaml"; then
+            echo "values_file=true" >> $GITHUB_OUTPUT
+          else
+            echo "values_file=false" >> $GITHUB_OUTPUT
+          fi
+
+  # --- Build & Deploy --- #
+  build_deploy:
+    name: "Build"
+    needs:  validate
+    if: "${{ needs.validate.outputs.continue == 'true' }}"
+    uses: Roamtech-Solutions/infrastructure/.github/workflows/build-deploy.yaml@master
+    with:
+      service_name: ${{ vars.SERVICE_NAME }}
+      service_group: ${{ vars.SERVICE_GROUP }}
+      ref: ${{ github.ref_name }}
+      environment: sandbox
+    secrets: inherit
+
