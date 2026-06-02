@@ -463,7 +463,22 @@ func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Messa
 	if mnoErr.IsRetryable() {
 		return s.allRetryable(msgs, mnoErr, latency)
 	}
-	return s.allPermanent(msgs, mnoErr, latency)
+
+	// Non-retryable batch error: fall back to per-message sends rather than permanently
+	// failing every message together. This allows messages that can succeed individually
+	// (different sender, different content, etc.) to do so, and gives operators visibility
+	// into which specific messages are rejected vs which would pass.
+	s.log.WithFields(map[string]interface{}{
+		"count":       len(msgs),
+		"status_code": resp.StatusCode,
+		"response":    responseStr,
+	}).Warn("SDP batch rejected (non-retryable), falling back to per-message sends")
+
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = s.executeSend(ctx, msg, time.Now())
+	}
+	return results
 }
 
 // allRetryable returns a retryable SendResult for every message in the slice.

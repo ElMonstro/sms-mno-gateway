@@ -41,8 +41,8 @@ type App struct {
 	HTTPServer      *api.Server
 
 	// Dedicated retry consumers and processors — isolated from main queue processing
-	TransactionalRetryConsumer *rabbitmq.Consumer
-	PromotionalRetryConsumer   *rabbitmq.Consumer
+	TransactionalRetryConsumer  *rabbitmq.Consumer
+	PromotionalRetryConsumer    *rabbitmq.Consumer
 	TransactionalRetryProcessor *service.Processor
 	PromotionalRetryProcessor   *service.Processor
 
