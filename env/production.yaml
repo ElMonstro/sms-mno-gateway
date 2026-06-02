@@ -3,6 +3,7 @@ type: go
 ingress: true
 migrations: false
 
+#check allowed ips for whitelisting...or should it be public?
 allowed_networks:
   public-ipv4:
     - "0.0.0.0/0"
