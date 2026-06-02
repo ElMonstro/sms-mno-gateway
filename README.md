@@ -74,7 +74,10 @@ graph LR
 docker-compose up -d redis rabbitmq
 
 # Set environment variables (see .env.example)
-export RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+export RABBITMQ_HOST=localhost
+export RABBITMQ_PORT=5672
+export RABBITMQ_USER=guest
+export RABBITMQ_PASS=guest
 export REDIS_HOST=localhost
 
 # Run the service
@@ -100,7 +103,10 @@ Key environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
+| `RABBITMQ_HOST` | `localhost` | RabbitMQ host |
+| `RABBITMQ_PORT` | `5672` | RabbitMQ port |
+| `RABBITMQ_USER` | `guest` | RabbitMQ username |
+| `RABBITMQ_PASS` | `guest` | RabbitMQ password |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `WORKER_COUNT` | `10` | Concurrent workers |
 | `LOG_LEVEL` | `info` | Log verbosity |
@@ -292,7 +298,10 @@ docker build -t emalify-sms-mno-gateway .
 
 # Run container
 docker run -d \
-  -e RABBITMQ_URL=amqp://user:pass@rabbitmq:5672/ \
+    -e RABBITMQ_HOST=rabbitmq \
+    -e RABBITMQ_PORT=5672 \
+    -e RABBITMQ_USER=user \
+    -e RABBITMQ_PASS=pass \
   -e REDIS_HOST=redis \
   -p 8080:8080 \
   emalify-sms-mno-gateway

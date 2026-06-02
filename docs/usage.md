@@ -478,7 +478,10 @@ Returns Prometheus-formatted metrics.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RABBITMQ_URL` | amqp://guest:guest@localhost:5672/ | RabbitMQ connection URL |
+| `RABBITMQ_HOST` | localhost | RabbitMQ host |
+| `RABBITMQ_PORT` | 5672 | RabbitMQ port |
+| `RABBITMQ_USER` | guest | RabbitMQ username |
+| `RABBITMQ_PASS` | guest | RabbitMQ password |
 | `RABBITMQ_PREFETCH` | 10 | Prefetch count per consumer |
 
 ## Operational Procedures

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -120,7 +121,7 @@ func Load() *Config {
 			DB:       getEnvAsInt("REDIS_DB", 0),
 		},
 		RabbitMQ: RabbitMQConfig{
-			URL:           getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			URL:           buildRabbitMQURL(),
 			PrefetchCount: getEnvAsInt("RABBITMQ_PREFETCH", 10),
 			ReconnectWait: getEnvAsDuration("RABBITMQ_RECONNECT_WAIT", 5*time.Second),
 		},
@@ -238,6 +239,23 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 		}
 	}
 	return defaultValue
+}
+
+func buildRabbitMQURL() string {
+	if value, exists := os.LookupEnv("RABBITMQ_URL"); exists && value != "" {
+		return value
+	}
+
+	host := getEnv("RABBITMQ_HOST", "localhost")
+	port := getEnv("RABBITMQ_PORT", "5672")
+	user := getEnv("RABBITMQ_USER", "guest")
+	pass := getEnv("RABBITMQ_PASS", "guest")
+
+	if user == "" && pass == "" {
+		return "amqp://" + host + ":" + port + "/"
+	}
+
+	return "amqp://" + url.QueryEscape(user) + ":" + url.QueryEscape(pass) + "@" + host + ":" + port + "/"
 }
 
 // RedisAddr returns the Redis address in host:port format
