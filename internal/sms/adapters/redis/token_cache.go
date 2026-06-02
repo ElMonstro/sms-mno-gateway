@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -38,6 +39,7 @@ func NewTokenCache(cfg *TokenCacheConfig) (*TokenCache, error) {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 
@@ -48,15 +50,13 @@ func NewTokenCache(cfg *TokenCacheConfig) (*TokenCache, error) {
 }
 
 // Get retrieves a token from the cache
-// EM-145 fix: Returns errors instead of swallowing them
 func (c *TokenCache) Get(ctx context.Context, key string) (string, bool, error) {
 	val, err := c.client.Get(ctx, key).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		// Key doesn't exist - not an error
 		return "", false, nil
 	}
 	if err != nil {
-		// Actual error occurred - return it
 		c.log.WithError(err).WithField("key", key).Error("Failed to get token from cache")
 		return "", false, err
 	}
@@ -108,6 +108,11 @@ func (c *TokenCache) Close() error {
 // Ping checks the Redis connection
 func (c *TokenCache) Ping(ctx context.Context) error {
 	return c.client.Ping(ctx).Err()
+}
+
+// Client returns the underlying Redis client for reuse by other components
+func (c *TokenCache) Client() *redis.Client {
+	return c.client
 }
 
 // Ensure TokenCache implements ports.TokenCache

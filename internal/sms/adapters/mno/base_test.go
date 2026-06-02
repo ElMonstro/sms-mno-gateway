@@ -195,6 +195,7 @@ func TestBaseSMPPSender_buildRequestURL(t *testing.T) {
 		username: "user123",
 		password: "pass456",
 		dlrURL:   "http://dlr.example.com/callback",
+		log:      logger.NewNoop(),
 	}
 
 	msg := &domain.Message{

@@ -85,8 +85,9 @@ func (c *Consumer) Consume(ctx context.Context) (<-chan ports.Delivery, error) {
 					return
 				}
 
-				// Parse messages
-				messages, err := c.parseMessages(msg.Body)
+				// Parse messages and stamp the source queue so downstream
+				// components (e.g. DLR URL selection) can branch per queue.
+				messages, err := c.parseMessages(msg.Body, c.queueName)
 				if err != nil {
 					c.log.WithError(err).Error("Failed to parse messages")
 					// Nack with no requeue for invalid messages
@@ -116,7 +117,8 @@ func (c *Consumer) Consume(ctx context.Context) (<-chan ports.Delivery, error) {
 }
 
 // parseMessages parses the message body into a slice of domain.Message
-func (c *Consumer) parseMessages(body []byte) ([]*domain.Message, error) {
+// and stamps each message with the source queue name.
+func (c *Consumer) parseMessages(body []byte, queueName string) ([]*domain.Message, error) {
 	var messages []*domain.Message
 	if err := json.Unmarshal(body, &messages); err != nil {
 		// Try single message format
@@ -125,6 +127,9 @@ func (c *Consumer) parseMessages(body []byte) ([]*domain.Message, error) {
 			return nil, err
 		}
 		messages = []*domain.Message{&single}
+	}
+	for _, msg := range messages {
+		msg.SourceQueue = queueName
 	}
 	return messages, nil
 }

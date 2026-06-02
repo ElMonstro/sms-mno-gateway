@@ -38,6 +38,14 @@ type PrometheusMetrics struct {
 
 	// Health metrics
 	healthStatus *prometheus.GaugeVec
+
+	// Priority routing metrics (EM-155)
+	priorityRouted          *prometheus.CounterVec
+	transactionalProcessed  *prometheus.CounterVec
+	transactionalQueueDepth prometheus.Gauge
+	schedulerProcessed      *prometheus.CounterVec
+	schedulerWeight         *prometheus.GaugeVec
+	starvationTriggers      *prometheus.CounterVec
 }
 
 // New creates a new Prometheus metrics instance
@@ -145,6 +153,55 @@ func New(namespace string) *PrometheusMetrics {
 			},
 			[]string{"component"},
 		),
+
+		// Priority routing metrics (EM-155)
+		priorityRouted: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "priority_messages_routed_total",
+				Help:      "Total messages routed by message type and queue",
+			},
+			[]string{"type", "queue"},
+		),
+		transactionalProcessed: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "priority_transactional_processed_total",
+				Help:      "Total transactional messages processed by status",
+			},
+			[]string{"status"},
+		),
+		transactionalQueueDepth: promauto.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "priority_transactional_queue_depth",
+				Help:      "Current depth of transactional message queue",
+			},
+		),
+		schedulerProcessed: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "priority_scheduler_processed_total",
+				Help:      "Total messages processed by scheduler per queue",
+			},
+			[]string{"queue"},
+		),
+		schedulerWeight: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "priority_scheduler_weight",
+				Help:      "Current weight assigned to each queue",
+			},
+			[]string{"queue"},
+		),
+		starvationTriggers: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "priority_starvation_triggers_total",
+				Help:      "Number of times starvation prevention was triggered per queue",
+			},
+			[]string{"queue"},
+		),
 	}
 }
 
@@ -221,6 +278,38 @@ func (m *PrometheusMetrics) SetHealthy(component string, healthy bool) {
 	m.healthStatus.WithLabelValues(component).Set(value)
 }
 
+// Priority routing metrics (EM-155)
+
+// IncPriorityRouted increments the priority routed counter
+func (m *PrometheusMetrics) IncPriorityRouted(messageType, queue string) {
+	m.priorityRouted.WithLabelValues(messageType, queue).Inc()
+}
+
+// IncTransactionalProcessed increments the transactional processed counter
+func (m *PrometheusMetrics) IncTransactionalProcessed(status string) {
+	m.transactionalProcessed.WithLabelValues(status).Inc()
+}
+
+// SetTransactionalQueueDepth sets the transactional queue depth
+func (m *PrometheusMetrics) SetTransactionalQueueDepth(depth int) {
+	m.transactionalQueueDepth.Set(float64(depth))
+}
+
+// IncSchedulerProcessed increments the scheduler processed counter
+func (m *PrometheusMetrics) IncSchedulerProcessed(queue string) {
+	m.schedulerProcessed.WithLabelValues(queue).Inc()
+}
+
+// SetSchedulerWeight sets the scheduler weight for a queue
+func (m *PrometheusMetrics) SetSchedulerWeight(queue string, weight int) {
+	m.schedulerWeight.WithLabelValues(queue).Set(float64(weight))
+}
+
+// IncStarvationTriggers increments the starvation triggers counter
+func (m *PrometheusMetrics) IncStarvationTriggers(queue string) {
+	m.starvationTriggers.WithLabelValues(queue).Inc()
+}
+
 // Ensure PrometheusMetrics implements ports.Metrics
 var _ ports.Metrics = (*PrometheusMetrics)(nil)
 
@@ -239,6 +328,12 @@ func (m *NoopMetrics) IncDeadLetters(network domain.Network)                    
 func (m *NoopMetrics) IncRateLimitHits(network domain.Network)                           {}
 func (m *NoopMetrics) ObserveHTTPRequestDuration(method, path string, statusCode int, duration time.Duration) {
 }
-func (m *NoopMetrics) SetHealthy(component string, healthy bool) {}
+func (m *NoopMetrics) SetHealthy(component string, healthy bool)   {}
+func (m *NoopMetrics) IncPriorityRouted(messageType, queue string) {}
+func (m *NoopMetrics) IncTransactionalProcessed(status string)     {}
+func (m *NoopMetrics) SetTransactionalQueueDepth(depth int)        {}
+func (m *NoopMetrics) IncSchedulerProcessed(queue string)          {}
+func (m *NoopMetrics) SetSchedulerWeight(queue string, weight int) {}
+func (m *NoopMetrics) IncStarvationTriggers(queue string)          {}
 
 var _ ports.Metrics = (*NoopMetrics)(nil)

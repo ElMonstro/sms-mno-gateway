@@ -17,7 +17,7 @@ type AirtelSender struct {
 
 // NewAirtelSender creates a new Airtel SMPP sender
 func NewAirtelSender(
-	baseURL, smsc, username, password, dlrURL string,
+	baseURL, smsc, username, password, dlrURL, dlrURLApiV2 string,
 	httpClient *httpclient.Client,
 	circuitBreaker *circuitbreaker.CircuitBreaker,
 	metrics ports.Metrics,
@@ -32,6 +32,7 @@ func NewAirtelSender(
 			Username:       username,
 			Password:       password,
 			DLRURL:         dlrURL,
+			DLRURLApiV2:    dlrURLApiV2,
 			HTTPClient:     httpClient,
 			CircuitBreaker: circuitBreaker,
 			Metrics:        metrics,

@@ -67,19 +67,97 @@ func (m *MockMNOSender) GetSentMessages() []*domain.Message {
 	return m.SentMessages
 }
 
+// MockBatchSender implements both ports.MNOSender and ports.BatchSender.
+// Use it to test the SDP promotional batch path in the processor.
+type MockBatchSender struct {
+	mu            sync.Mutex
+	name          string
+	network       domain.Network
+	healthy       bool
+	SendCalls     []*domain.Message
+	BatchCalls    []int               // size of each SendBatch call
+	BatchMessages [][]*domain.Message // messages passed in each SendBatch call
+	SendBatchFunc func(ctx context.Context, msgs []*domain.Message) []*domain.SendResult
+}
+
+func NewMockBatchSender(name string, network domain.Network) *MockBatchSender {
+	return &MockBatchSender{name: name, network: network, healthy: true}
+}
+
+func (m *MockBatchSender) Send(ctx context.Context, msg *domain.Message) *domain.SendResult {
+	m.mu.Lock()
+	m.SendCalls = append(m.SendCalls, msg)
+	m.mu.Unlock()
+	return domain.NewSuccessResult(msg, "mock-batch-send", 10*time.Millisecond)
+}
+
+func (m *MockBatchSender) Name() string             { return m.name }
+func (m *MockBatchSender) Network() domain.Network  { return m.network }
+func (m *MockBatchSender) IsHealthy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.healthy
+}
+
+func (m *MockBatchSender) SendBatch(ctx context.Context, msgs []*domain.Message) []*domain.SendResult {
+	m.mu.Lock()
+	m.BatchCalls = append(m.BatchCalls, len(msgs))
+	batch := make([]*domain.Message, len(msgs))
+	copy(batch, msgs)
+	m.BatchMessages = append(m.BatchMessages, batch)
+	m.mu.Unlock()
+
+	if m.SendBatchFunc != nil {
+		return m.SendBatchFunc(ctx, msgs)
+	}
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = domain.NewSuccessResult(msg, "mock-batch", 10*time.Millisecond)
+	}
+	return results
+}
+
+func (m *MockBatchSender) GetBatchCalls() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int(nil), m.BatchCalls...)
+}
+
+func (m *MockBatchSender) GetBatchMessages() [][]*domain.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([][]*domain.Message, len(m.BatchMessages))
+	for i, batch := range m.BatchMessages {
+		result[i] = append([]*domain.Message(nil), batch...)
+	}
+	return result
+}
+
+func (m *MockBatchSender) GetSendCalls() []*domain.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*domain.Message(nil), m.SendCalls...)
+}
+
 // MockMNOSenderFactory is a mock implementation of ports.MNOSenderFactory
 type MockMNOSenderFactory struct {
 	mu      sync.Mutex
-	senders map[domain.Network]*MockMNOSender
+	senders map[domain.Network]ports.MNOSender
 }
 
 func NewMockMNOSenderFactory() *MockMNOSenderFactory {
 	return &MockMNOSenderFactory{
-		senders: make(map[domain.Network]*MockMNOSender),
+		senders: make(map[domain.Network]ports.MNOSender),
 	}
 }
 
 func (f *MockMNOSenderFactory) RegisterSender(sender *MockMNOSender) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.senders[sender.network] = sender
+}
+
+func (f *MockMNOSenderFactory) RegisterBatchSender(sender *MockBatchSender) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.senders[sender.network] = sender
@@ -116,10 +194,11 @@ func (f *MockMNOSenderFactory) ListSenders() []ports.MNOSender {
 
 // MockQueuePublisher is a mock implementation of ports.QueuePublisher
 type MockQueuePublisher struct {
-	mu             sync.Mutex
-	connected      bool
-	PublishedItems []*PublishedItem
-	PublishFunc    func(ctx context.Context, result *domain.SendResult) error
+	mu               sync.Mutex
+	connected        bool
+	PublishedItems   []*PublishedItem
+	PublishFunc      func(ctx context.Context, result *domain.SendResult) error
+	GatewayQueueName string
 }
 
 type PublishedItem struct {
@@ -165,7 +244,12 @@ func (p *MockQueuePublisher) PublishResult(ctx context.Context, result *domain.S
 	queueType := "save_to_db"
 	switch result.Type {
 	case domain.ResultRetryable:
-		queueType = "retry"
+		// Mirror real publisher: route to type-specific delay queue
+		if result.Message.IsPromotional(p.GatewayQueueName) {
+			queueType = "promotional_delay"
+		} else {
+			queueType = "transactional_delay"
+		}
 	case domain.ResultPermanent:
 		queueType = "dlq"
 	}
@@ -185,7 +269,6 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Publish successful messages
 	for _, r := range batch.Successful {
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
@@ -193,15 +276,17 @@ func (p *MockQueuePublisher) PublishBatchResults(ctx context.Context, batch *dom
 		})
 	}
 
-	// Publish retryable messages
 	for _, r := range batch.Retryable {
+		queueType := "transactional_delay"
+		if r.Message.IsPromotional(p.GatewayQueueName) {
+			queueType = "promotional_delay"
+		}
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
-			QueueType: "retry",
+			QueueType: queueType,
 		})
 	}
 
-	// Publish failed messages
 	for _, r := range batch.Failed {
 		p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 			Result:    r,
@@ -326,9 +411,43 @@ func (m *MockMetrics) ObserveHTTPRequestDuration(method, path string, statusCode
 }
 func (m *MockMetrics) SetHealthy(component string, healthy bool) {}
 
+func (m *MockMetrics) IncPriorityRouted(messageType, queue string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "priority_routed_" + messageType + "_" + queue
+	m.ProcessedCounts[key]++
+}
+
+func (m *MockMetrics) IncTransactionalProcessed(status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "transactional_" + status
+	m.ProcessedCounts[key]++
+}
+
+func (m *MockMetrics) SetTransactionalQueueDepth(depth int) {}
+
+func (m *MockMetrics) IncSchedulerProcessed(queue string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "scheduler_" + queue
+	m.ProcessedCounts[key]++
+}
+
+func (m *MockMetrics) SetSchedulerWeight(queue string, weight int) {}
+
+func (m *MockMetrics) IncStarvationTriggers(queue string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := "starvation_" + queue
+	m.ProcessedCounts[key]++
+}
+
 // MockDelivery is a mock implementation of ports.Delivery
 type MockDelivery struct {
 	Data       []byte
+	MockMsgs   []*domain.Message
+	Tag        uint64
 	AckCalled  bool
 	NackParam  bool
 	NackCalled bool
@@ -337,11 +456,28 @@ type MockDelivery struct {
 func NewMockDelivery(data []byte) *MockDelivery {
 	return &MockDelivery{
 		Data: data,
+		Tag:  1,
+	}
+}
+
+// NewMockDeliveryWithMessages creates a mock delivery with pre-parsed messages
+func NewMockDeliveryWithMessages(msgs []*domain.Message) *MockDelivery {
+	return &MockDelivery{
+		MockMsgs: msgs,
+		Tag:      1,
 	}
 }
 
 func (d *MockDelivery) Body() []byte {
 	return d.Data
+}
+
+func (d *MockDelivery) Messages() []*domain.Message {
+	return d.MockMsgs
+}
+
+func (d *MockDelivery) DeliveryTag() uint64 {
+	return d.Tag
 }
 
 func (d *MockDelivery) Ack() error {

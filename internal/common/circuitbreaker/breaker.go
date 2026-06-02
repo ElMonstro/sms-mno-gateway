@@ -51,10 +51,10 @@ func DefaultConfig(name string) *Config {
 		Name:                name,
 		MaxRequests:         3,
 		Interval:            60 * time.Second,
-		Timeout:             30 * time.Second,
-		ConsecutiveFailures: 5,
+		Timeout:             10 * time.Second,
+		ConsecutiveFailures: 20,
 		FailureRatio:        0.5,
-		MinRequests:         10,
+		MinRequests:         50,
 	}
 }
 

@@ -21,11 +21,15 @@ import (
 type SafaricomSDPSender struct {
 	authURL        string
 	sendURL        string
+	authUsername   string
+	countryPrefix  string
 	username       string
 	password       string
 	dlrURL         string
+	dlrURLApiV2    string
 	tokenKey       string
 	tokenTTL       time.Duration
+	batchSize      int
 	tokenCache     ports.TokenCache
 	httpClient     *httpclient.Client
 	circuitBreaker *circuitbreaker.CircuitBreaker
@@ -37,11 +41,15 @@ type SafaricomSDPSender struct {
 type SDPConfig struct {
 	AuthURL        string
 	SendURL        string
+	AuthUsername   string
+	CountryPrefix  string
 	Username       string
 	Password       string
 	DLRURL         string
+	DLRURLApiV2    string
 	TokenKey       string
 	TokenTTL       time.Duration
+	BatchSize      int
 	TokenCache     ports.TokenCache
 	HTTPClient     *httpclient.Client
 	CircuitBreaker *circuitbreaker.CircuitBreaker
@@ -71,6 +79,7 @@ type SDPSendRequest struct {
 type SDPSMSRecord struct {
 	UserName          string `json:"userName"`
 	Channel           string `json:"channel"`
+	PackageID         uint64 `json:"package_id"`
 	OA                string `json:"oa"`
 	MSISDN            string `json:"msisdn"`
 	Message           string `json:"message"`
@@ -80,14 +89,28 @@ type SDPSMSRecord struct {
 
 // NewSafaricomSDPSender creates a new Safaricom SDP sender
 func NewSafaricomSDPSender(cfg *SDPConfig) *SafaricomSDPSender {
+	authUsername := cfg.AuthUsername
+	if authUsername == "" {
+		authUsername = cfg.Username
+	}
+
+	batchSize := cfg.BatchSize
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
 	return &SafaricomSDPSender{
 		authURL:        cfg.AuthURL,
 		sendURL:        cfg.SendURL,
+		authUsername:   authUsername,
+		countryPrefix:  cfg.CountryPrefix,
 		username:       cfg.Username,
 		password:       cfg.Password,
 		dlrURL:         cfg.DLRURL,
+		dlrURLApiV2:    cfg.DLRURLApiV2,
 		tokenKey:       cfg.TokenKey,
 		tokenTTL:       cfg.TokenTTL,
+		batchSize:      batchSize,
 		tokenCache:     cfg.TokenCache,
 		httpClient:     cfg.HTTPClient,
 		circuitBreaker: cfg.CircuitBreaker,
@@ -158,11 +181,12 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 			{
 				UserName:          s.username,
 				Channel:           "sms",
+				PackageID:         0,
 				OA:                msg.Sender,
 				MSISDN:            msg.NormalizeMSISDN(),
 				Message:           msg.Content,
 				UniqueID:          msg.Correlator,
-				ActionResponseURL: s.dlrURL,
+				ActionResponseURL: s.resolveDLRURL(msg),
 			},
 		},
 	}
@@ -173,6 +197,12 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 		return domain.NewPermanentResult(msg, err, time.Since(start))
 	}
 
+	s.log.WithFields(map[string]interface{}{
+		"correlator": msg.Correlator,
+		"url":        s.sendURL,
+		"payload":    string(payloadBytes),
+	}).Debug("SDP send request payload")
+
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sendURL, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -182,6 +212,16 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Authorization", "Bearer "+token)
+	if s.countryPrefix != "" {
+		req.Header.Set("X-Country", s.countryPrefix)
+	}
+
+	s.log.WithFields(map[string]interface{}{
+		"correlator":   msg.Correlator,
+		"content_type": req.Header.Get("Content-Type"),
+		"auth_scheme":  "Bearer",
+		"x_country":    req.Header.Get("X-Country"),
+	}).Debug("SDP send request headers")
 
 	// Execute request
 	resp, err := s.httpClient.Do(req)
@@ -204,9 +244,11 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	// Check response status
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		s.log.WithFields(map[string]interface{}{
-			"network":    domain.NetworkSafaricom,
-			"correlator": msg.Correlator,
-			"latency_ms": latency.Milliseconds(),
+			"network":     domain.NetworkSafaricom,
+			"correlator":  msg.Correlator,
+			"status_code": resp.StatusCode,
+			"response":    responseStr,
+			"latency_ms":  latency.Milliseconds(),
 		}).Info("Message sent successfully via SDP")
 		return domain.NewSuccessResult(msg, responseStr, latency)
 	}
@@ -214,11 +256,24 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	// Handle error response
 	mnoErr := domain.NewMNOError(domain.NetworkSafaricom, resp.StatusCode, responseStr, nil)
 
-	// Check if token expired (401)
+	// 401 Unauthorized — token expired, clear cache so next call fetches a fresh one.
 	if resp.StatusCode == http.StatusUnauthorized {
-		s.log.Warn("SDP token expired, clearing cache")
+		s.log.Warn("SDP token expired (401), clearing cache")
 		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
 			s.log.WithError(err).Warn("Failed to delete expired token from cache")
+		}
+		return domain.NewRetryableResult(msg, domain.ErrTokenExpired, latency)
+	}
+
+	// 404 "no Route matched with those values" is Kong's response for an expired/invalid
+	// bearer token on this gateway — treat the same as 401.
+	if resp.StatusCode == http.StatusNotFound {
+		s.log.WithFields(map[string]interface{}{
+			"correlator": msg.Correlator,
+			"response":   responseStr,
+		}).Warn("SDP got 404 (likely expired token), clearing cache")
+		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
+			s.log.WithError(err).Warn("Failed to delete token from cache after 404")
 		}
 		return domain.NewRetryableResult(msg, domain.ErrTokenExpired, latency)
 	}
@@ -237,6 +292,209 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	return domain.NewPermanentResult(msg, mnoErr, latency)
 }
 
+// resolveDLRURL selects the correct DLR URL based on the message source queue.
+// Messages from the gateway queue use the primary DLR URL; all others use the API v2 URL.
+func (s *SafaricomSDPSender) resolveDLRURL(msg *domain.Message) string {
+	if s.dlrURLApiV2 != "" && msg.SourceQueue != "" && msg.SourceQueue != gatewayQueueName {
+		s.log.WithFields(map[string]interface{}{
+			"correlator":   msg.Correlator,
+			"source_queue": msg.SourceQueue,
+			"dlr_url":      s.dlrURLApiV2,
+		}).Debug("SDP using API v2 DLR URL")
+		return s.dlrURLApiV2
+	}
+	s.log.WithFields(map[string]interface{}{
+		"correlator":   msg.Correlator,
+		"source_queue": msg.SourceQueue,
+		"dlr_url":      s.dlrURL,
+	}).Debug("SDP using primary DLR URL")
+	return s.dlrURL
+}
+
+// SendBatch sends multiple promotional messages in a single SDP API call.
+// The SDP API returns one response for the entire DataSet — success or failure
+// applies to all messages in the batch.
+// Implements ports.BatchSender.
+func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Message) []*domain.SendResult {
+	start := time.Now()
+
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	// Defensive check: all messages must share the same sender (oa) value.
+	// The SDP DataSet API requires a homogeneous oa across all records in one call.
+	// processSdpBatch already groups by sender; this guards against programming errors.
+	if len(msgs) > 1 {
+		firstSender := msgs[0].Sender
+		for i := 1; i < len(msgs); i++ {
+			if msgs[i].Sender != firstSender {
+				mixedErr := fmt.Errorf("SDP batch contains mixed senders: %q (index 0) vs %q (index %d) — each DataSet must use a single oa value", firstSender, msgs[i].Sender, i)
+				s.log.WithError(mixedErr).Error("Rejecting SDP batch with mixed senders")
+				return s.allPermanent(msgs, mixedErr, time.Since(start))
+			}
+		}
+	}
+
+	// Circuit breaker: if open, fail all immediately without an HTTP call
+	if s.circuitBreaker != nil && s.circuitBreaker.IsOpen() {
+		s.log.WithField("network", domain.NetworkSafaricom).Warn("Circuit breaker is open, rejecting SDP batch")
+		return s.allRetryable(msgs, domain.ErrCircuitOpen, time.Since(start))
+	}
+
+	token, err := s.getToken(ctx)
+	if err != nil {
+		s.log.WithError(err).Error("Failed to get SDP token for batch")
+		return s.allRetryable(msgs, domain.ErrTokenFetchFail, time.Since(start))
+	}
+
+	// Build DataSet with one record per message
+	records := make([]SDPSMSRecord, len(msgs))
+	for i, msg := range msgs {
+		records[i] = SDPSMSRecord{
+			UserName:          s.username,
+			Channel:           "sms",
+			PackageID:         0,
+			OA:                msg.Sender,
+			MSISDN:            msg.NormalizeMSISDN(),
+			Message:           msg.Content,
+			UniqueID:          msg.Correlator,
+			ActionResponseURL: s.resolveDLRURL(msg),
+		}
+	}
+
+	payload := SDPSendRequest{
+		TimeStamp: time.Now().Unix(),
+		DataSet:   records,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		s.log.WithError(err).Error("Failed to marshal SDP batch payload")
+		return s.allPermanent(msgs, err, time.Since(start))
+	}
+
+	correlators := make([]string, len(msgs))
+	for i, msg := range msgs {
+		correlators[i] = msg.Correlator
+	}
+	s.log.WithFields(map[string]interface{}{
+		"count":       len(msgs),
+		"url":         s.sendURL,
+		"correlators": correlators,
+		"payload":     string(payloadBytes),
+	}).Debug("SDP batch send request payload")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sendURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		s.log.WithError(err).Error("Failed to create SDP batch request")
+		return s.allPermanent(msgs, err, time.Since(start))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Authorization", "Bearer "+token)
+	if s.countryPrefix != "" {
+		req.Header.Set("X-Country", s.countryPrefix)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		s.log.WithError(err).Error("SDP batch request failed")
+		return s.allRetryable(msgs, domain.ErrMNOUnavailable, time.Since(start))
+	}
+	defer httpclient.DrainBody(resp)
+
+	body, _ := io.ReadAll(resp.Body)
+	responseStr := string(body)
+	latency := time.Since(start)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		s.log.WithFields(map[string]interface{}{
+			"network":     domain.NetworkSafaricom,
+			"count":       len(msgs),
+			"status_code": resp.StatusCode,
+			"latency_ms":  latency.Milliseconds(),
+		}).Info("SDP batch sent successfully")
+
+		results := make([]*domain.SendResult, len(msgs))
+		for i, msg := range msgs {
+			results[i] = domain.NewSuccessResult(msg, responseStr, latency)
+			if s.metrics != nil {
+				s.metrics.IncMessagesProcessed(domain.NetworkSafaricom, "success")
+			}
+		}
+		return results
+	}
+
+	// 401: token expired — clear cache and return all as retryable
+	if resp.StatusCode == http.StatusUnauthorized {
+		s.log.Warn("SDP batch: token expired, clearing cache")
+		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
+			s.log.WithError(err).Warn("Failed to delete expired token from cache")
+		}
+		return s.allRetryable(msgs, domain.ErrTokenExpired, latency)
+	}
+
+	mnoErr := domain.NewMNOError(domain.NetworkSafaricom, resp.StatusCode, responseStr, nil)
+
+	s.log.WithFields(map[string]interface{}{
+		"network":     domain.NetworkSafaricom,
+		"count":       len(msgs),
+		"status_code": resp.StatusCode,
+		"response":    responseStr,
+		"url":         s.sendURL,
+	}).Error("SDP batch rejected by MNO")
+
+	// 404 "no Route matched with those values" is the Safaricom Kong gateway's response
+	// for an expired or invalid bearer token (same root cause as 401 on other routes).
+	// Clear the cached token so the next attempt fetches a fresh one, then return all
+	// messages as retryable — falling back to per-message sends with the same expired
+	// token would produce the same 404 and drop them to the DLQ.
+	if resp.StatusCode == http.StatusNotFound {
+		s.log.WithFields(map[string]interface{}{
+			"count":    len(msgs),
+			"response": responseStr,
+		}).Warn("SDP batch got 404 (likely expired token), clearing cache and retrying")
+		if err := s.tokenCache.Delete(ctx, s.tokenKey); err != nil {
+			s.log.WithError(err).Warn("Failed to delete token from cache after 404")
+		}
+		return s.allRetryable(msgs, domain.ErrTokenExpired, latency)
+	}
+
+	if mnoErr.IsRetryable() {
+		return s.allRetryable(msgs, mnoErr, latency)
+	}
+	return s.allPermanent(msgs, mnoErr, latency)
+}
+
+// allRetryable returns a retryable SendResult for every message in the slice.
+func (s *SafaricomSDPSender) allRetryable(msgs []*domain.Message, err error, latency time.Duration) []*domain.SendResult {
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = domain.NewRetryableResult(msg, err, latency)
+		if s.metrics != nil {
+			s.metrics.IncMessagesProcessed(domain.NetworkSafaricom, "failed")
+		}
+	}
+	return results
+}
+
+// allPermanent returns a permanent SendResult for every message in the slice.
+func (s *SafaricomSDPSender) allPermanent(msgs []*domain.Message, err error, latency time.Duration) []*domain.SendResult {
+	results := make([]*domain.SendResult, len(msgs))
+	for i, msg := range msgs {
+		results[i] = domain.NewPermanentResult(msg, err, latency)
+		if s.metrics != nil {
+			s.metrics.IncMessagesProcessed(domain.NetworkSafaricom, "failed")
+		}
+	}
+	return results
+}
+
+// BatchSize returns the configured batch size for this sender.
+func (s *SafaricomSDPSender) BatchSize() int {
+	return s.batchSize
+}
+
 // getToken retrieves the authentication token, using cache when possible
 func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 	// Try to get from cache - EM-145 fix: properly handle cache errors
@@ -248,12 +506,11 @@ func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 		return token, nil
 	}
 
-	// Fetch new token with retry
+	// Fetch new token with retry and context-aware backoff.
 	var lastErr error
 	for i := 0; i < 10; i++ {
 		token, err = s.fetchToken(ctx)
 		if err == nil {
-			// Cache the token
 			if cacheErr := s.tokenCache.Set(ctx, s.tokenKey, token, s.tokenTTL); cacheErr != nil {
 				s.log.WithError(cacheErr).Warn("Failed to cache SDP token")
 			}
@@ -261,7 +518,11 @@ func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 		}
 		lastErr = err
 		s.log.WithError(err).WithField("attempt", i+1).Warn("Token fetch failed, retrying")
-		time.Sleep(time.Duration(i+1) * time.Second) // Linear backoff
+		select {
+		case <-time.After(time.Duration(i+1) * time.Second):
+		case <-ctx.Done():
+			return "", fmt.Errorf("token fetch cancelled after %d attempts: %w", i+1, ctx.Err())
+		}
 	}
 
 	return "", fmt.Errorf("failed to fetch token after 10 attempts: %w", lastErr)
@@ -270,7 +531,7 @@ func (s *SafaricomSDPSender) getToken(ctx context.Context) (string, error) {
 // fetchToken fetches a new authentication token from SDP
 func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 	authReq := SDPAuthRequest{
-		Username: s.username,
+		Username: s.authUsername,
 		Password: s.password,
 	}
 
@@ -279,12 +540,25 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to marshal auth request: %w", err)
 	}
 
+	s.log.WithFields(map[string]interface{}{
+		"url":          s.authURL,
+		"username":     s.username,
+		"password_set": s.password != "",
+		"payload":      string(payload),
+	}).Debug("SDP auth request details")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.authURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("failed to create auth request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+	s.log.WithFields(map[string]interface{}{
+		"Content-Type":     req.Header.Get("Content-Type"),
+		"X-Requested-With": req.Header.Get("X-Requested-With"),
+	}).Debug("SDP auth request headers")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {

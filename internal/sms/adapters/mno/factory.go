@@ -16,6 +16,7 @@ type Factory struct {
 	safaricomSDP  *SafaricomSDPSender
 	safaricomSMPP *SafaricomSMPPSender
 	airtel        *AirtelSender
+	airtelPromo   *AirtelSender
 	telkom        *TelkomSender
 	equitel       *EquitelSender
 	cm            *CMSender
@@ -36,6 +37,10 @@ type FactoryConfig struct {
 func NewFactory(cfg *FactoryConfig) *Factory {
 	log := cfg.Logger
 
+	// Configure the DLR gateway queue name so BaseSMPPSender can select
+	// the correct DLR URL based on the message's source queue.
+	SetGatewayQueueName(cfg.Config.Queues.GatewayQueueName)
+
 	// Get circuit breakers
 	safCB, _ := cfg.BreakerRegistry.Get(domain.NetworkSafaricom)
 	airCB, _ := cfg.BreakerRegistry.Get(domain.NetworkAirtel)
@@ -49,11 +54,15 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 		safaricomSDP: NewSafaricomSDPSender(&SDPConfig{
 			AuthURL:        mnoCfg.SafaricomSDP.AuthURL,
 			SendURL:        mnoCfg.SafaricomSDP.SendURL,
+			AuthUsername:   mnoCfg.SafaricomSDP.AuthUser,
+			CountryPrefix:  mnoCfg.SafaricomSDP.CountryPrefix,
 			Username:       mnoCfg.SafaricomSDP.Username,
 			Password:       mnoCfg.SafaricomSDP.Password,
 			DLRURL:         mnoCfg.SafaricomSDP.DLRURL,
+			DLRURLApiV2:    mnoCfg.SafaricomSDP.DLRURLApiV2,
 			TokenKey:       mnoCfg.SafaricomSDP.TokenKey,
 			TokenTTL:       mnoCfg.SafaricomSDP.TokenTTL,
+			BatchSize:      mnoCfg.SafaricomSDP.PromoSDPBatchSize,
 			TokenCache:     cfg.TokenCache,
 			HTTPClient:     cfg.HTTPClient,
 			CircuitBreaker: safCB,
@@ -66,6 +75,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.SafaricomSMPP.Username,
 			mnoCfg.SafaricomSMPP.Password,
 			mnoCfg.SafaricomSMPP.DLRURL,
+			mnoCfg.SafaricomSMPP.DLRURLApiV2,
 			cfg.HTTPClient,
 			safCB,
 			cfg.Metrics,
@@ -77,6 +87,19 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.Airtel.Username,
 			mnoCfg.Airtel.Password,
 			mnoCfg.Airtel.DLRURL,
+			mnoCfg.Airtel.DLRURLApiV2,
+			cfg.HTTPClient,
+			airCB,
+			cfg.Metrics,
+			log,
+		),
+		airtelPromo: NewAirtelSender(
+			mnoCfg.AirtelPromo.URL,
+			mnoCfg.AirtelPromo.SMSC,
+			mnoCfg.AirtelPromo.Username,
+			mnoCfg.AirtelPromo.Password,
+			mnoCfg.AirtelPromo.DLRURL,
+			mnoCfg.AirtelPromo.DLRURLApiV2,
 			cfg.HTTPClient,
 			airCB,
 			cfg.Metrics,
@@ -88,6 +111,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.Telkom.Username,
 			mnoCfg.Telkom.Password,
 			mnoCfg.Telkom.DLRURL,
+			mnoCfg.Telkom.DLRURLApiV2,
 			cfg.HTTPClient,
 			telCB,
 			cfg.Metrics,
@@ -99,6 +123,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			mnoCfg.Equitel.Username,
 			mnoCfg.Equitel.Password,
 			mnoCfg.Equitel.DLRURL,
+			mnoCfg.Equitel.DLRURLApiV2,
 			cfg.HTTPClient,
 			equCB,
 			cfg.Metrics,
@@ -133,6 +158,29 @@ func (f *Factory) GetSender(msg *domain.Message) (ports.MNOSender, error) {
 		return f.safaricomSMPP, nil
 	}
 
+	// Airtel traffic split by packageId — transactional and promotional
+	// use separate SMPP credentials
+	if network == domain.NetworkAirtel {
+		if msg.IsTransactional() {
+			f.log.WithFields(map[string]interface{}{
+				"correlator":   msg.Correlator,
+				"packageId":    msg.PackageID,
+				"source_queue": msg.SourceQueue,
+				"smpp_url":     f.airtel.baseURL,
+				"smsc":         f.airtel.smsc,
+			}).Debug("Routing to Airtel SMPP (transactional)")
+			return f.airtel, nil
+		}
+		f.log.WithFields(map[string]interface{}{
+			"correlator":   msg.Correlator,
+			"packageId":    msg.PackageID,
+			"source_queue": msg.SourceQueue,
+			"smpp_url":     f.airtelPromo.baseURL,
+			"smsc":         f.airtelPromo.smsc,
+		}).Debug("Routing to Airtel SMPP (promotional)")
+		return f.airtelPromo, nil
+	}
+
 	return f.GetSenderByNetwork(network)
 }
 
@@ -160,6 +208,7 @@ func (f *Factory) ListSenders() []ports.MNOSender {
 		f.safaricomSDP,
 		f.safaricomSMPP,
 		f.airtel,
+		f.airtelPromo,
 		f.telkom,
 		f.equitel,
 		f.cm,
