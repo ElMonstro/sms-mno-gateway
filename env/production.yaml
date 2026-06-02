@@ -26,13 +26,6 @@ env:
   - name: HTTP_IDLE_TIMEOUT
     value: 60s
 
-  - name: REDIS_HOST
-    value: localhost
-  - name: REDIS_PORT
-    value: "6379"
-  - name: REDIS_DB
-    value: "0"
-
   - name: RABBITMQ_PREFETCH
     value: "300"
   - name: RABBITMQ_RECONNECT_WAIT
@@ -206,8 +199,6 @@ env:
     value: "10"
 
 secrets:
-  - REDIS_PASSWORD
-  - RABBITMQ_URL
   - SDP_USERNAME
   - SDP_PASSWORD
   - SAFARICOM_SMPP_USERNAME
