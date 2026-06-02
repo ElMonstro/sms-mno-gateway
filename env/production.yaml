@@ -197,6 +197,8 @@ env:
     value: "100"
   - name: PRIORITY_TRANSACTIONAL_MAX_STARVATION_AGE_SEC
     value: "10"
+  - name: COUNTRY_PREFIX
+    value: "KEN"
 
 secrets:
   - SDP_USERNAME
