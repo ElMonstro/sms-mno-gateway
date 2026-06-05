@@ -56,7 +56,7 @@ env:
   - name: SDP_DLR_URL
     value: https://bizdlr.emalify.com/save
   - name: SDP_DLR_URL_API_V2
-    value: http://130.211.65.52:8088/save
+    value: https://gateway-dlr-handler.emalify.com/save
   - name: SDP_TOKEN_KEY
     value: roamtech
   - name: SDP_TOKEN_TTL
@@ -71,7 +71,7 @@ env:
   - name: SAFARICOM_SMPP_DLR_URL
     value: https://bizdlr.emalify.com/save
   - name: SAFARICOM_SMPP_DLR_URL_API_V2
-    value: http://130.211.65.52:8088/save
+    value: https://gateway-dlr-handler.emalify.com/save
 
   - name: AIRTEL_SMPP_URL
     value: http://105.21.40.34:1404/cgi-bin/sendsms
@@ -80,7 +80,7 @@ env:
   - name: AIRTEL_SMPP_DLR_URL
     value: https://bizdlr.emalify.com/save
   - name: AIRTEL_SMPP_DLR_URL_API_V2
-    value: http://130.211.65.52:8088/save
+    value: https://gateway-dlr-handler.emalify.com/save
 
   - name: AIRTEL_SMPP_URL_PROMO
     value: http://105.21.40.34:1404/cgi-bin/sendsms
@@ -89,7 +89,7 @@ env:
   - name: AIRTEL_SMPP_DLR_URL_PROMO
     value: https://bizdlr.emalify.com/save
   - name: AIRTEL_SMPP_DLR_URL_PROMO_API_V2
-    value: http://130.211.65.52:8088/save
+    value: https://gateway-dlr-handler.emalify.com/save
 
   - name: TELKOM_SMPP_URL
     value: http://34.77.25.98:14013/cgi-bin/sendsms
@@ -107,7 +107,7 @@ env:
   - name: EQUITEL_SMPP_DLR_URL
     value: https://bizdlr.emalify.com/save
   - name: EQUITEL_SMPP_DLR_URL_API_V2
-    value: http://130.211.65.52:8088/save
+    value: https://gateway-dlr-handler.emalify.com/save
 
   - name: CM_SMPP_URL
     value: http://34.77.25.98:14013/cgi-bin/sendsms
