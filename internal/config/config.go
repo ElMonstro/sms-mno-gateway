@@ -122,16 +122,16 @@ type MNOConfig struct {
 
 // SDPConfig holds Safaricom SDP configuration
 type SDPConfig struct {
-	AuthURL          string
-	SendURL          string
-	AuthUser         string
-	CountryPrefix    string
-	Username         string
-	Password         string
-	DLRURL           string
-	DLRURLApiV2      string
-	TokenKey         string
-	TokenTTL         time.Duration
+	AuthURL           string
+	SendURL           string
+	AuthUser          string
+	CountryPrefix     string
+	Username          string
+	Password          string
+	DLRURL            string
+	DLRURLApiV2       string
+	TokenKey          string
+	TokenTTL          time.Duration
 	PromoSDPBatchSize int
 }
 
@@ -223,16 +223,16 @@ func Load() *Config {
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{
-				AuthURL:       getEnv("SDP_AUTH_URL", "https://dsvc2.safaricom.com:9480/api/auth/login"),
-				SendURL:       getEnv("SDP_SEND_URL", "https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms"),
-				AuthUser:      getEnv("SDP_USERNAME", getEnv("SDP_USER", "")),
-				CountryPrefix: getEnv("COUNTRY_PREFIX", ""),
-				Username:      getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
-				Password:      getEnv("SDP_PASSWORD", ""),
-				DLRURL:           getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
-				DLRURLApiV2:      getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
-				TokenKey:         getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
-				TokenTTL:         getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
+				AuthURL:           getEnv("SDP_AUTH_URL", "https://dsvc2.safaricom.com:9480/api/auth/login"),
+				SendURL:           getEnv("SDP_SEND_URL", "https://dsvc2.safaricom.com:9480/api/public/CMS/bulksms"),
+				AuthUser:          getEnv("SDP_USERNAME", getEnv("SDP_USER", "")),
+				CountryPrefix:     getEnv("COUNTRY_PREFIX", ""),
+				Username:          getEnv("SDP_USER", getEnv("SDP_USERNAME", "")),
+				Password:          getEnv("SDP_PASSWORD", ""),
+				DLRURL:            getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
+				DLRURLApiV2:       getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
+				TokenKey:          getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
+				TokenTTL:          getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
 				PromoSDPBatchSize: getEnvAsInt("SDP_PROMO_BATCH_SIZE", 1),
 			},
 			SafaricomSMPP: SMPPConfig{
@@ -309,21 +309,21 @@ func Load() *Config {
 			MaxStarvationAgeSec:  getEnvAsInt("PRIORITY_MAX_STARVATION_AGE_SEC", 10),
 		},
 		Retry: RetryConfig{
-			TransactionalDelayMs:    getEnvAsInt("RETRY_TRANSACTIONAL_DELAY_MS", 5000),
-			PromotionalDelayMs:      getEnvAsInt("RETRY_PROMOTIONAL_DELAY_MS", 30000),
+			TransactionalDelayMs:     getEnvAsInt("RETRY_TRANSACTIONAL_DELAY_MS", 5000),
+			PromotionalDelayMs:       getEnvAsInt("RETRY_PROMOTIONAL_DELAY_MS", 30000),
 			TransactionalWorkerCount: getEnvAsInt("RETRY_TRANSACTIONAL_WORKER_COUNT", 50),
-			TransactionalPrefetch:   getEnvAsInt("RETRY_TRANSACTIONAL_PREFETCH", 100),
-			PromotionalWorkerCount:  getEnvAsInt("RETRY_PROMOTIONAL_WORKER_COUNT", 200),
-			PromotionalPrefetch:     getEnvAsInt("RETRY_PROMOTIONAL_PREFETCH", 400),
-			RateLimitSafaricomSDP:   getEnvAsInt("RATE_LIMIT_RETRY_SAFARICOM_SDP", 200),
-			RateLimitSafaricomSMPP:  getEnvAsInt("RATE_LIMIT_RETRY_SAFARICOM_SMPP", 40),
-			RateLimitAirtel:         getEnvAsInt("RATE_LIMIT_RETRY_AIRTEL", 5),
-			RateLimitEquitel:        getEnvAsInt("RATE_LIMIT_RETRY_EQUITEL", 10),
-			RateLimitTelkom:         getEnvAsInt("RATE_LIMIT_RETRY_TELKOM", 10),
-			RateLimitCM:             getEnvAsInt("RATE_LIMIT_RETRY_CM", 5),
-			BurstFactor:             getEnvAsInt("RATE_LIMIT_RETRY_BURST_FACTOR", 1),
-			MaxRetriesTransactional: getEnvAsInt("RETRY_MAX_RETRIES_TRANSACTIONAL", 5),
-			MaxRetriesPromotional:   getEnvAsInt("RETRY_MAX_RETRIES_PROMOTIONAL", 10),
+			TransactionalPrefetch:    getEnvAsInt("RETRY_TRANSACTIONAL_PREFETCH", 100),
+			PromotionalWorkerCount:   getEnvAsInt("RETRY_PROMOTIONAL_WORKER_COUNT", 200),
+			PromotionalPrefetch:      getEnvAsInt("RETRY_PROMOTIONAL_PREFETCH", 400),
+			RateLimitSafaricomSDP:    getEnvAsInt("RATE_LIMIT_RETRY_SAFARICOM_SDP", 200),
+			RateLimitSafaricomSMPP:   getEnvAsInt("RATE_LIMIT_RETRY_SAFARICOM_SMPP", 40),
+			RateLimitAirtel:          getEnvAsInt("RATE_LIMIT_RETRY_AIRTEL", 5),
+			RateLimitEquitel:         getEnvAsInt("RATE_LIMIT_RETRY_EQUITEL", 10),
+			RateLimitTelkom:          getEnvAsInt("RATE_LIMIT_RETRY_TELKOM", 10),
+			RateLimitCM:              getEnvAsInt("RATE_LIMIT_RETRY_CM", 5),
+			BurstFactor:              getEnvAsInt("RATE_LIMIT_RETRY_BURST_FACTOR", 1),
+			MaxRetriesTransactional:  getEnvAsInt("RETRY_MAX_RETRIES_TRANSACTIONAL", 5),
+			MaxRetriesPromotional:    getEnvAsInt("RETRY_MAX_RETRIES_PROMOTIONAL", 10),
 		},
 	}
 }
