@@ -18,7 +18,7 @@ env:
     value: "150"
 
   - name: HTTP_PORT
-    value: "8081"
+    value: "8080"
   - name: HTTP_READ_TIMEOUT
     value: 30s
   - name: HTTP_WRITE_TIMEOUT
