@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,7 +13,6 @@ import (
 )
 
 const (
-	rabbitMQURL  = "amqp://emalifyuser:EmKenya3030%40%23@10.132.0.23:5672"
 	sourceQueue  = "SMS_DEAD_LETTER_QUEUE"
 	promoQueue   = "sms_transactional"
 	permQueue    = "SMS_DEAD_LETTER_QUEUE_PERM"
@@ -20,6 +20,15 @@ const (
 	idleTimeout  = 3 * time.Second
 	tickInterval = time.Minute
 )
+
+func rabbitMQURL() string {
+	return fmt.Sprintf("amqp://%s:%s@%s:%s/",
+		os.Getenv("RABBITMQ_USER"),
+		os.Getenv("RABBITMQ_PASS"),
+		os.Getenv("RABBITMQ_HOST"),
+		os.Getenv("RABBITMQ_PORT"),
+	)
+}
 
 type MessagePayload struct {
 	Corelator   string    `json:"corelator"`
@@ -42,7 +51,7 @@ type migrator struct {
 }
 
 func newMigrator() (*migrator, error) {
-	conn, err := amqp.Dial(rabbitMQURL)
+	conn, err := amqp.Dial(rabbitMQURL())
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +82,7 @@ func (m *migrator) reconnect() error {
 	if !m.conn.IsClosed() {
 		return nil
 	}
-	conn, err := amqp.Dial(rabbitMQURL)
+	conn, err := amqp.Dial(rabbitMQURL())
 	if err != nil {
 		return err
 	}
