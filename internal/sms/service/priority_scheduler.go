@@ -133,9 +133,23 @@ func (s *PriorityScheduler) Start() error {
 		s.log.WithError(err).Warn("Failed to load initial weights, using defaults")
 	}
 
+	// Snapshot refillPeriod under lock before launching goroutines so that a
+	// concurrent watchSchedulerConfig write cannot race with creditRefillLoop's
+	// ticker creation (go test -race would flag the unsynchronised read otherwise).
+	s.mu.RLock()
+	initialPeriod := s.refillPeriod
+	s.mu.RUnlock()
+
+	s.log.WithFields(map[string]interface{}{
+		"credit_multiplier":  s.creditMultiplier,
+		"refill_period_ms":   initialPeriod.Milliseconds(),
+		"max_starvation_sec": s.maxStarvationAge.Seconds(),
+		"default_weight":     s.defaultWeight,
+	}).Info("Priority scheduler started")
+
 	// Start credit refill loop
 	s.wg.Add(1)
-	go s.creditRefillLoop()
+	go s.creditRefillLoop(initialPeriod)
 
 	// Start weight watcher for hot-reload
 	if s.priorityStore != nil {
@@ -148,13 +162,6 @@ func (s *PriorityScheduler) Start() error {
 		s.wg.Add(1)
 		go s.watchSchedulerConfig()
 	}
-
-	s.log.WithFields(map[string]interface{}{
-		"credit_multiplier":  s.creditMultiplier,
-		"refill_period_ms":   s.refillPeriod.Milliseconds(),
-		"max_starvation_sec": s.maxStarvationAge.Seconds(),
-		"default_weight":     s.defaultWeight,
-	}).Info("Priority scheduler started")
 
 	return nil
 }
@@ -288,14 +295,16 @@ func (s *PriorityScheduler) watchWeights() {
 }
 
 // creditRefillLoop periodically refills credits for all queues.
-// It listens on refillPeriodCh to pick up live period changes from watchSchedulerConfig.
-func (s *PriorityScheduler) creditRefillLoop() {
+// initialPeriod is snapshotted by Start() under s.mu before this goroutine
+// launches, avoiding a race with watchSchedulerConfig's concurrent writes.
+// It listens on refillPeriodCh to pick up live period changes thereafter.
+func (s *PriorityScheduler) creditRefillLoop(initialPeriod time.Duration) {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(s.refillPeriod)
+	ticker := time.NewTicker(initialPeriod)
 	defer ticker.Stop()
 
-	s.log.WithField("period_ms", s.refillPeriod.Milliseconds()).Info("Credit refill loop started")
+	s.log.WithField("period_ms", initialPeriod.Milliseconds()).Info("Credit refill loop started")
 
 	for {
 		select {

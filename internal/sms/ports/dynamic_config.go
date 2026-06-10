@@ -30,10 +30,12 @@ type DynamicConfigStore interface {
 
 // Namespace constants — prevents raw string literals in callers.
 const (
-	NSRetry                  = "retry"
-	NSRateLimits             = "rate_limits"
-	NSSchedulerPromotional   = "scheduler:promotional"
-	NSSchedulerTransactional = "scheduler:transactional"
+	NSRetry                = "retry"
+	NSRateLimits           = "rate_limits"
+	NSSchedulerPromotional = "scheduler:promotional"
+	// NSSchedulerTransactional is intentionally omitted until TransactionalHandler
+	// has a dynConfig field and a running watcher. Seeding it without a watcher
+	// creates a misleading key in Redis that ops cannot actually hot-reload.
 )
 
 // Field constants per namespace.

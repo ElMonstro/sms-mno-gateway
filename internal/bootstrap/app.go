@@ -545,6 +545,10 @@ func (app *App) Start(ctx context.Context) error {
 // It blocks on the first delivery, then non-blocking drains further deliveries until
 // maxMsgs is reached or the channel has no immediately-available messages.
 // Returns nil slices when ctx is cancelled or the deliveries channel is closed.
+//
+// Note: if a single delivery contains more messages than maxMsgs, the returned
+// batch will exceed maxMsgs. Individual deliveries are never split — all messages
+// inside one AMQP delivery must be acked or nacked together.
 func accumulateBatch(ctx context.Context, deliveries <-chan ports.Delivery, maxMsgs int) ([]*domain.Message, []ports.Delivery) {
 	var msgs []*domain.Message
 	var batch []ports.Delivery

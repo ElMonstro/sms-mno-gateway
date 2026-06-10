@@ -44,7 +44,6 @@ func NewDynamicConfig(client *goredis.Client, log logger.Logger) (*DynamicConfig
 		ports.NSRetry,
 		ports.NSRateLimits,
 		ports.NSSchedulerPromotional,
-		ports.NSSchedulerTransactional,
 	} {
 		if err := dc.refreshNamespace(ctx, ns); err != nil {
 			dc.log.WithError(err).WithField("namespace", ns).Warn("Failed to pre-warm dynamic config cache")
@@ -86,7 +85,10 @@ func (dc *DynamicConfig) SetInt(ctx context.Context, namespace, field string, va
 	return dc.client.Publish(ctx, dynConfigChannel, namespace).Err()
 }
 
-// GetAll fetches all fields for a namespace directly from Redis (bypasses cache).
+// GetAll fetches all fields for a namespace directly from Redis, bypassing the
+// local cache intentionally. Its callers (admin HTTP handlers) need authoritative
+// data, not a potentially stale snapshot — the extra Redis RTT is acceptable there
+// and is not on the hot message-processing path.
 func (dc *DynamicConfig) GetAll(ctx context.Context, namespace string) (map[string]string, error) {
 	return dc.client.HGetAll(ctx, dynConfigKeyPrefix+namespace).Result()
 }
@@ -151,18 +153,22 @@ func (dc *DynamicConfig) Watch(ctx context.Context, namespace string) (<-chan st
 	return ch, nil
 }
 
-// Seed writes defaults into namespace only if the hash does not yet exist.
-// Idempotent: safe to call on every startup.
+// Seed writes default values into a namespace using HSETNX per field, which is
+// atomic at the field level. Unlike the previous EXISTS→HSET pattern, this avoids
+// the TOCTOU window where two pods starting simultaneously both see a missing key
+// and the second overwrites any operator-set values written in between. Fields that
+// already exist in Redis are left untouched; only genuinely absent fields are added.
 func (dc *DynamicConfig) Seed(ctx context.Context, namespace string, defaults map[string]any) error {
 	key := dynConfigKeyPrefix + namespace
-	exists, err := dc.client.Exists(ctx, key).Result()
-	if err != nil {
+	pipe := dc.client.Pipeline()
+	for field, value := range defaults {
+		pipe.HSetNX(ctx, key, field, value)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}
-	if exists > 0 {
-		return nil
-	}
-	return dc.SetAll(ctx, namespace, defaults)
+	// Refresh cache so GetInt() reflects any newly written fields immediately.
+	return dc.refreshNamespace(ctx, namespace)
 }
 
 // Close cancels all active Watch goroutines.
