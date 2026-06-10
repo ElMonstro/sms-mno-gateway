@@ -7,6 +7,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/domain"
+	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/ports"
 )
 
 // Limiter provides per-network rate limiting with separate budgets for main and retry queues.
@@ -204,12 +205,15 @@ func (l *Limiter) getMainLimiter(network domain.Network) *rate.Limiter {
 }
 
 // SetRate dynamically updates the main rate limit for a network.
+// Both the token rate and burst cap are updated together so they stay in sync
+// (burst = ratePerSecond, matching the initial configuration from setMainLimiter).
 func (l *Limiter) SetRate(network domain.Network, ratePerSecond int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if limiter, ok := l.main[network]; ok {
 		limiter.SetLimit(rate.Limit(ratePerSecond))
+		limiter.SetBurst(ratePerSecond)
 		l.defaults[network] = ratePerSecond
 	}
 }
@@ -252,4 +256,30 @@ func (l *Limiter) RetryTokens(network domain.Network) float64 {
 		return limiter.Tokens()
 	}
 	return 0
+}
+
+// WatchDynamicConfig subscribes to NSRateLimits changes and applies live rate
+// updates via SetRate. It runs until ctx is cancelled.
+//
+// Note: only the main (l.main) limiters are updated. Retry budgets (l.retry) are
+// intentionally left static — they are sized at startup based on RetryConfig and
+// BurstFactor to provide a stable, predictable reservation for retry workers. Hot-
+// reloading retry limits would require a SetRetryRate() method and is not yet needed.
+func (l *Limiter) WatchDynamicConfig(ctx context.Context, dc ports.DynamicConfigStore) {
+	ch, err := dc.Watch(ctx, ports.NSRateLimits)
+	if err != nil {
+		return
+	}
+	go func() {
+		for range ch {
+			l.SetRate(domain.NetworkSafaricom, dc.GetInt(ports.NSRateLimits, ports.FieldRateSafaricom, l.GetRate(domain.NetworkSafaricom)))
+			l.SetRate(domain.NetworkAirtel, dc.GetInt(ports.NSRateLimits, ports.FieldRateAirtel, l.GetRate(domain.NetworkAirtel)))
+			l.SetRate(domain.NetworkTelkom, dc.GetInt(ports.NSRateLimits, ports.FieldRateTelkom, l.GetRate(domain.NetworkTelkom)))
+			l.SetRate(domain.NetworkEquitel, dc.GetInt(ports.NSRateLimits, ports.FieldRateEquitel, l.GetRate(domain.NetworkEquitel)))
+			cmRate := dc.GetInt(ports.NSRateLimits, ports.FieldRateCM, l.GetRate(domain.NetworkCM))
+			l.SetRate(domain.NetworkCM, cmRate)
+			l.SetRate(domain.NetworkINTNL, cmRate)
+			l.SetRate(domain.NetworkUnknown, dc.GetInt(ports.NSRateLimits, ports.FieldRateDefault, l.GetRate(domain.NetworkUnknown)))
+		}
+	}()
 }
