@@ -46,6 +46,11 @@ type PrometheusMetrics struct {
 	schedulerProcessed      *prometheus.CounterVec
 	schedulerWeight         *prometheus.GaugeVec
 	starvationTriggers      *prometheus.CounterVec
+
+	// DLQ migrator metrics
+	dlqMigratorForwarded       *prometheus.CounterVec
+	dlqMigratorPublishErrors   prometheus.Counter
+	dlqMigratorChannelRestarts prometheus.Counter
 }
 
 // New creates a new Prometheus metrics instance
@@ -202,6 +207,28 @@ func New(namespace string) *PrometheusMetrics {
 			},
 			[]string{"queue"},
 		),
+		dlqMigratorForwarded: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "dlq_migrator_forwarded_total",
+				Help:      "Total deliveries forwarded by the DLQ migrator, by destination queue",
+			},
+			[]string{"dest"},
+		),
+		dlqMigratorPublishErrors: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "dlq_migrator_publish_errors_total",
+				Help:      "Total publish errors encountered by the DLQ migrator",
+			},
+		),
+		dlqMigratorChannelRestarts: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "dlq_migrator_channel_restarts_total",
+				Help:      "Total channel restarts due to connection loss in the DLQ migrator",
+			},
+		),
 	}
 }
 
@@ -310,6 +337,21 @@ func (m *PrometheusMetrics) IncStarvationTriggers(queue string) {
 	m.starvationTriggers.WithLabelValues(queue).Inc()
 }
 
+// IncDLQMigratorForwarded increments the DLQ migrator forwarded counter for the given destination
+func (m *PrometheusMetrics) IncDLQMigratorForwarded(dest string) {
+	m.dlqMigratorForwarded.WithLabelValues(dest).Inc()
+}
+
+// IncDLQMigratorPublishError increments the DLQ migrator publish error counter
+func (m *PrometheusMetrics) IncDLQMigratorPublishError() {
+	m.dlqMigratorPublishErrors.Inc()
+}
+
+// IncDLQMigratorChannelRestart increments the DLQ migrator channel restart counter
+func (m *PrometheusMetrics) IncDLQMigratorChannelRestart() {
+	m.dlqMigratorChannelRestarts.Inc()
+}
+
 // Ensure PrometheusMetrics implements ports.Metrics
 var _ ports.Metrics = (*PrometheusMetrics)(nil)
 
@@ -334,6 +376,9 @@ func (m *NoopMetrics) IncTransactionalProcessed(status string)     {}
 func (m *NoopMetrics) SetTransactionalQueueDepth(depth int)        {}
 func (m *NoopMetrics) IncSchedulerProcessed(queue string)          {}
 func (m *NoopMetrics) SetSchedulerWeight(queue string, weight int) {}
-func (m *NoopMetrics) IncStarvationTriggers(queue string)          {}
+func (m *NoopMetrics) IncStarvationTriggers(queue string)     {}
+func (m *NoopMetrics) IncDLQMigratorForwarded(dest string)    {}
+func (m *NoopMetrics) IncDLQMigratorPublishError()            {}
+func (m *NoopMetrics) IncDLQMigratorChannelRestart()          {}
 
 var _ ports.Metrics = (*NoopMetrics)(nil)

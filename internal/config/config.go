@@ -78,6 +78,11 @@ type QueuesConfig struct {
 	// Queues absent from the map use the global SDP_PROMO_BATCH_SIZE default.
 	// A value of 0 or 1 disables batching for that queue.
 	SDPBatchSizes map[string]int
+
+	// DLQ migrator settings
+	DLQMigratorEnabled   bool
+	DLQMigratorDestQueue string // queue that receives max-retry-exceeded messages
+	DLQPermQueue         string // permanent DLQ for unrecoverable messages
 }
 
 // RetryConfig holds configuration for the split retry consumer pools
@@ -220,6 +225,9 @@ func Load() *Config {
 			TransactionalDelayQueue: getEnv("SMS_TRANSACTIONAL_DELAY_QUEUE", "SMS_TRANSACTIONAL_DELAY_QUEUE"),
 			PromotionalDelayQueue:   getEnv("SMS_PROMOTIONAL_DELAY_QUEUE", "SMS_PROMOTIONAL_DELAY_QUEUE"),
 			SDPBatchSizes:           getEnvAsQueueWeights("QUEUE_SDP_BATCH_SIZES", nil),
+			DLQMigratorEnabled:      getEnvAsBool("DLQ_MIGRATOR_ENABLED", true),
+			DLQMigratorDestQueue:    getEnv("DLQ_MIGRATOR_DEST_QUEUE", "sms_transactional"),
+			DLQPermQueue:            getEnv("DLQ_PERM_QUEUE", "SMS_DEAD_LETTER_QUEUE_PERM"),
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{

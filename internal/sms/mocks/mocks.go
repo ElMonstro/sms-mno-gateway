@@ -443,6 +443,24 @@ func (m *MockMetrics) IncStarvationTriggers(queue string) {
 	m.ProcessedCounts[key]++
 }
 
+func (m *MockMetrics) IncDLQMigratorForwarded(dest string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ProcessedCounts["dlq_forwarded_"+dest]++
+}
+
+func (m *MockMetrics) IncDLQMigratorPublishError() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ProcessedCounts["dlq_publish_errors"]++
+}
+
+func (m *MockMetrics) IncDLQMigratorChannelRestart() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ProcessedCounts["dlq_channel_restarts"]++
+}
+
 // MockDelivery is a mock implementation of ports.Delivery
 type MockDelivery struct {
 	Data       []byte
