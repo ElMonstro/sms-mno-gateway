@@ -41,6 +41,11 @@ type Metrics interface {
 	IncSchedulerProcessed(queue string)
 	SetSchedulerWeight(queue string, weight int)
 	IncStarvationTriggers(queue string)
+
+	// DLQ migrator metrics
+	IncDLQMigratorForwarded(dest string)
+	IncDLQMigratorPublishError()
+	IncDLQMigratorChannelRestart()
 }
 
 // MetricLabels contains common labels for metrics

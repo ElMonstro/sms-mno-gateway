@@ -2,9 +2,11 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sony/gobreaker"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/api"
@@ -531,6 +533,9 @@ func (app *App) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start DLQ migrator as an isolated background goroutine
+	app.startDLQMigrator(ctx)
+
 	// Start HTTP server in a goroutine
 	go func() {
 		if err := app.HTTPServer.Start(); err != nil {
@@ -539,6 +544,111 @@ func (app *App) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// startDLQMigrator launches the DLQ migrator as an isolated background goroutine.
+// It restarts automatically on channel/connection loss. Disabled via DLQ_MIGRATOR_ENABLED=false.
+func (app *App) startDLQMigrator(ctx context.Context) {
+	if !app.Config.Queues.DLQMigratorEnabled {
+		app.Logger.Info("DLQ migrator disabled — skipping")
+		return
+	}
+
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			if err := app.runDLQMigratorOnce(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				app.Logger.WithError(err).Warn("DLQ migrator: restarting in 5s")
+				app.Metrics.IncDLQMigratorChannelRestart()
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+}
+
+// runDLQMigratorOnce opens a channel, consumes from the DLQ, and routes each
+// delivery until the channel closes or ctx is cancelled.
+// Returns nil on clean shutdown, non-nil on any connection/channel error.
+func (app *App) runDLQMigratorOnce(ctx context.Context) error {
+	ch, err := app.RabbitConn.NewChannel()
+	if err != nil {
+		return fmt.Errorf("open channel: %w", err)
+	}
+	defer ch.Close()
+
+	destQueue := app.Config.Queues.DLQMigratorDestQueue
+	permQueue := app.Config.Queues.DLQPermQueue
+	for _, q := range []string{destQueue, permQueue} {
+		if _, err := ch.QueueDeclare(q, true, false, false, false, nil); err != nil {
+			return fmt.Errorf("declare %s: %w", q, err)
+		}
+	}
+
+	dlq := app.Config.Queues.DeadLetterQueue
+	msgs, err := ch.Consume(dlq, "dlq-migrator", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume %s: %w", dlq, err)
+	}
+
+	app.Logger.Infof("DLQ migrator started — listening on %s", dlq)
+
+	for {
+		select {
+		case d, ok := <-msgs:
+			if !ok {
+				return fmt.Errorf("channel closed")
+			}
+
+			dest := permQueue
+			// Try single-message path first (common case: Publish marshals one *domain.Message as object)
+			var single domain.Message
+			if err := json.Unmarshal(d.Body, &single); err == nil {
+				if single.Description == domain.ErrMaxRetriesExceeded.Error() {
+					dest = destQueue
+				}
+			} else {
+				// Fall back to batch path (PublishBatch marshals []*domain.Message as array)
+				var batch []domain.Message
+				if err := json.Unmarshal(d.Body, &batch); err == nil {
+					for _, m := range batch {
+						if m.Description == domain.ErrMaxRetriesExceeded.Error() {
+							dest = destQueue
+							break
+						}
+					}
+				}
+			}
+
+			if err := ch.PublishWithContext(ctx, "", dest, false, false, amqp.Publishing{
+				ContentType:  "application/json",
+				DeliveryMode: amqp.Persistent,
+				Body:         d.Body,
+			}); err != nil {
+				app.Logger.WithError(err).Error("DLQ migrator: publish failed — requeuing")
+				app.Metrics.IncDLQMigratorPublishError()
+				d.Nack(false, true)
+				continue
+			}
+
+			app.Logger.Infof("DLQ migrator: forwarded delivery to %s", dest)
+			app.Metrics.IncDLQMigratorForwarded(dest)
+			d.Ack(false)
+
+		case <-ctx.Done():
+			app.Logger.Info("DLQ migrator stopped")
+			return nil
+		}
+	}
 }
 
 // accumulateBatch collects up to maxMsgs messages across successive deliveries.
