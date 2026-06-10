@@ -14,6 +14,7 @@ type ResultHandler struct {
 	metrics                 ports.Metrics
 	maxRetriesTransactional int
 	maxRetriesPromotional   int
+	dynConfig               ports.DynamicConfigStore
 	log                     logger.Logger
 }
 
@@ -23,7 +24,10 @@ type ResultHandlerConfig struct {
 	Metrics                 ports.Metrics
 	MaxRetriesTransactional int
 	MaxRetriesPromotional   int
-	Logger                  logger.Logger
+	// DynamicConfig enables hot-reload of retry limits without restart.
+	// Falls back to MaxRetriesTransactional/MaxRetriesPromotional when nil.
+	DynamicConfig ports.DynamicConfigStore
+	Logger        logger.Logger
 }
 
 // NewResultHandler creates a new result handler
@@ -33,14 +37,23 @@ func NewResultHandler(cfg *ResultHandlerConfig) *ResultHandler {
 		metrics:                 cfg.Metrics,
 		maxRetriesTransactional: cfg.MaxRetriesTransactional,
 		maxRetriesPromotional:   cfg.MaxRetriesPromotional,
+		dynConfig:               cfg.DynamicConfig,
 		log:                     cfg.Logger,
 	}
 }
 
 // maxRetries returns the retry limit for the given message based on its type.
+// When DynamicConfig is set it reads the live value from Redis (cached locally,
+// zero extra RTT). Falls back to the static value from config.
 func (h *ResultHandler) maxRetries(msg *domain.Message) int {
 	if msg.IsTransactional() {
+		if h.dynConfig != nil {
+			return h.dynConfig.GetInt(ports.NSRetry, ports.FieldMaxRetriesTransactional, h.maxRetriesTransactional)
+		}
 		return h.maxRetriesTransactional
+	}
+	if h.dynConfig != nil {
+		return h.dynConfig.GetInt(ports.NSRetry, ports.FieldMaxRetriesPromotional, h.maxRetriesPromotional)
 	}
 	return h.maxRetriesPromotional
 }

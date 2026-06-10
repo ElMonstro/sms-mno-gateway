@@ -37,10 +37,16 @@ type PriorityScheduler struct {
 	weights       map[string]int
 	defaultWeight int
 
-	// Credit-based WRR configuration
+	// Credit-based WRR configuration (all protected by mu for live updates)
 	creditMultiplier int           // Credits per weight unit (e.g., 10 means weight=5 gets 50 credits)
 	refillPeriod     time.Duration // How often to refill credits
 	maxStarvationAge time.Duration // Max time without processing before starvation prevention kicks in
+
+	// refillPeriodCh carries period changes from watchSchedulerConfig to creditRefillLoop.
+	refillPeriodCh chan time.Duration
+
+	// dynConfig enables hot-reload of scheduler tuning from Redis.
+	dynConfig ports.DynamicConfigStore
 
 	// Stats
 	processedByQueue map[string]*atomic.Uint64
@@ -73,7 +79,10 @@ type PrioritySchedulerConfig struct {
 	CreditMultiplier int           // Credits per weight unit (default: 10)
 	RefillPeriod     time.Duration // Credit refill interval (default: 100ms)
 	MaxStarvationAge time.Duration // Starvation threshold (default: 10s)
-	Logger           logger.Logger
+	// DynamicConfig enables hot-reload of CreditMultiplier, RefillPeriod, and
+	// MaxStarvationAge from Redis without a restart. Reads from NSSchedulerPromotional.
+	DynamicConfig ports.DynamicConfigStore
+	Logger        logger.Logger
 }
 
 // NewPriorityScheduler creates a new priority scheduler with Credit-Based WRR
@@ -105,6 +114,8 @@ func NewPriorityScheduler(cfg *PrioritySchedulerConfig) *PriorityScheduler {
 		creditMultiplier: cfg.CreditMultiplier,
 		refillPeriod:     cfg.RefillPeriod,
 		maxStarvationAge: cfg.MaxStarvationAge,
+		refillPeriodCh:   make(chan time.Duration, 1),
+		dynConfig:        cfg.DynamicConfig,
 		processedByQueue: make(map[string]*atomic.Uint64),
 		ctx:              ctx,
 		cancelFn:         cancel,
@@ -130,6 +141,12 @@ func (s *PriorityScheduler) Start() error {
 	if s.priorityStore != nil {
 		s.wg.Add(1)
 		go s.watchWeights()
+	}
+
+	// Start dynamic config watcher (scheduler tuning: multiplier, period, starvation age)
+	if s.dynConfig != nil {
+		s.wg.Add(1)
+		go s.watchSchedulerConfig()
 	}
 
 	s.log.WithFields(map[string]interface{}{
@@ -270,7 +287,8 @@ func (s *PriorityScheduler) watchWeights() {
 	}
 }
 
-// creditRefillLoop periodically refills credits for all queues
+// creditRefillLoop periodically refills credits for all queues.
+// It listens on refillPeriodCh to pick up live period changes from watchSchedulerConfig.
 func (s *PriorityScheduler) creditRefillLoop() {
 	defer s.wg.Done()
 
@@ -283,8 +301,68 @@ func (s *PriorityScheduler) creditRefillLoop() {
 		select {
 		case <-s.ctx.Done():
 			return
+		case newPeriod := <-s.refillPeriodCh:
+			ticker.Reset(newPeriod)
+			s.log.WithField("period_ms", newPeriod.Milliseconds()).Info("Credit refill period updated")
 		case <-ticker.C:
 			s.refillAllCredits()
+		}
+	}
+}
+
+// watchSchedulerConfig watches NSSchedulerPromotional in DynamicConfig and applies
+// live updates to creditMultiplier, refillPeriod, and maxStarvationAge.
+func (s *PriorityScheduler) watchSchedulerConfig() {
+	defer s.wg.Done()
+
+	ch, err := s.dynConfig.Watch(s.ctx, ports.NSSchedulerPromotional)
+	if err != nil {
+		s.log.WithError(err).Error("Failed to start scheduler config watcher")
+		return
+	}
+
+	s.log.Info("Scheduler config watcher started")
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+			s.mu.Lock()
+			newMultiplier := s.dynConfig.GetInt(ports.NSSchedulerPromotional, ports.FieldCreditMultiplier, s.creditMultiplier)
+			newPeriodMs := s.dynConfig.GetInt(ports.NSSchedulerPromotional, ports.FieldRefillPeriodMs, int(s.refillPeriod.Milliseconds()))
+			newStarvationSec := s.dynConfig.GetInt(ports.NSSchedulerPromotional, ports.FieldMaxStarvationAgeSec, int(s.maxStarvationAge.Seconds()))
+
+			periodChanged := newPeriodMs != int(s.refillPeriod.Milliseconds())
+
+			if newMultiplier > 0 {
+				s.creditMultiplier = newMultiplier
+			}
+			newPeriod := time.Duration(newPeriodMs) * time.Millisecond
+			if newPeriod > 0 {
+				s.refillPeriod = newPeriod
+			}
+			newAge := time.Duration(newStarvationSec) * time.Second
+			if newAge > 0 {
+				s.maxStarvationAge = newAge
+			}
+			s.mu.Unlock()
+
+			if periodChanged && newPeriod > 0 {
+				select {
+				case s.refillPeriodCh <- newPeriod:
+				default:
+				}
+			}
+
+			s.log.WithFields(map[string]any{
+				"credit_multiplier":  newMultiplier,
+				"refill_period_ms":   newPeriodMs,
+				"max_starvation_sec": newStarvationSec,
+			}).Info("Scheduler config updated from Redis")
 		}
 	}
 }
@@ -337,9 +415,14 @@ func (s *PriorityScheduler) refillQueueCredits(qs *queueState) {
 // acquireCredit attempts to acquire a processing credit for a queue
 // Returns nil on success, context error if cancelled, or grants immediate credit on starvation
 func (s *PriorityScheduler) acquireCredit(ctx context.Context, qs *queueState) error {
+	// Read maxStarvationAge under RLock — watchSchedulerConfig may update it concurrently.
+	s.mu.RLock()
+	maxAge := s.maxStarvationAge
+	s.mu.RUnlock()
+
 	// Check for starvation - if queue hasn't processed in too long, grant immediate credit
 	timeSinceLastProcess := time.Since(time.Unix(0, qs.lastProcessedNano.Load()))
-	if timeSinceLastProcess > s.maxStarvationAge {
+	if timeSinceLastProcess > maxAge {
 		s.starvationEvents.Add(1)
 		if s.metrics != nil {
 			s.metrics.IncStarvationTriggers(qs.name)
@@ -347,7 +430,7 @@ func (s *PriorityScheduler) acquireCredit(ctx context.Context, qs *queueState) e
 		s.log.WithFields(map[string]interface{}{
 			"queue":            qs.name,
 			"time_since_ms":    timeSinceLastProcess.Milliseconds(),
-			"max_starvation_s": s.maxStarvationAge.Seconds(),
+			"max_starvation_s": maxAge.Seconds(),
 		}).Debug("Starvation prevention: granting immediate credit")
 		return nil
 	}

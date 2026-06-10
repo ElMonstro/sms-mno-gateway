@@ -56,6 +56,10 @@ type App struct {
 	// Queues listed in QUEUE_SDP_BATCH_SIZES get a dedicated processor with that batch size.
 	// All other queues fall back to Processor.
 	QueueProcessors map[string]*service.Processor
+
+	// DynamicConfig provides hot-reloadable config stored in Redis.
+	// See internal/sms/ports/dynamic_config.go for namespaces and fields.
+	DynamicConfig ports.DynamicConfigStore
 }
 
 // New creates and initializes all application components
@@ -138,6 +142,34 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	app.Logger.Info("Redis token cache initialized")
 
+	// 6.5. Initialize dynamic config store (hot-reloadable settings backed by Redis)
+	dc, err := redis.NewDynamicConfig(app.RedisCache.Client(), app.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init dynamic config: %w", err)
+	}
+	app.DynamicConfig = dc
+
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer seedCancel()
+	_ = dc.Seed(seedCtx, ports.NSRetry, map[string]any{
+		ports.FieldMaxRetriesTransactional: cfg.Retry.MaxRetriesTransactional,
+		ports.FieldMaxRetriesPromotional:   cfg.Retry.MaxRetriesPromotional,
+	})
+	_ = dc.Seed(seedCtx, ports.NSRateLimits, map[string]any{
+		ports.FieldRateSafaricom: cfg.RateLimit.Safaricom,
+		ports.FieldRateAirtel:    cfg.RateLimit.Airtel,
+		ports.FieldRateTelkom:    cfg.RateLimit.Telkom,
+		ports.FieldRateEquitel:   cfg.RateLimit.Equitel,
+		ports.FieldRateCM:        cfg.RateLimit.CM,
+		ports.FieldRateDefault:   cfg.RateLimit.Default,
+	})
+	_ = dc.Seed(seedCtx, ports.NSSchedulerPromotional, map[string]any{
+		ports.FieldCreditMultiplier:    cfg.Priority.CreditMultiplier,
+		ports.FieldRefillPeriodMs:      cfg.Priority.RefillPeriodMs,
+		ports.FieldMaxStarvationAgeSec: cfg.Priority.MaxStarvationAgeSec,
+	})
+	app.Logger.Info("Dynamic config store initialized and defaults seeded")
+
 	// 7. Initialize RabbitMQ connection
 	app.RabbitConn, err = rabbitmq.NewConnection(&rabbitmq.ConnectionConfig{
 		URL:           cfg.RabbitMQ.URL,
@@ -191,6 +223,7 @@ func New(cfg *config.Config) (*App, error) {
 		Metrics:                 app.Metrics,
 		MaxRetriesTransactional: cfg.Retry.MaxRetriesTransactional,
 		MaxRetriesPromotional:   cfg.Retry.MaxRetriesPromotional,
+		DynamicConfig:           dc,
 		Logger:                  app.Logger,
 	})
 
@@ -260,6 +293,7 @@ func New(cfg *config.Config) (*App, error) {
 			CreditMultiplier: cfg.Priority.CreditMultiplier,
 			RefillPeriod:     time.Duration(cfg.Priority.RefillPeriodMs) * time.Millisecond,
 			MaxStarvationAge: time.Duration(cfg.Priority.MaxStarvationAgeSec) * time.Second,
+			DynamicConfig:    dc,
 			Logger:           app.Logger,
 		})
 		app.Logger.WithFields(map[string]interface{}{
@@ -360,6 +394,11 @@ func New(cfg *config.Config) (*App, error) {
 
 // Start starts all consumers and the HTTP server
 func (app *App) Start(ctx context.Context) error {
+	// Wire dynamic config watchers (rate limiter + scheduler config hot-reload)
+	if app.DynamicConfig != nil {
+		app.RateLimiter.WatchDynamicConfig(ctx, app.DynamicConfig)
+	}
+
 	// Start priority components if enabled
 	if app.Config.Priority.Enabled {
 		app.Logger.Info("Starting priority routing components...")
@@ -594,6 +633,13 @@ func (app *App) Shutdown(ctx context.Context) error {
 	if app.PriorityStore != nil {
 		if err := app.PriorityStore.Close(); err != nil {
 			app.Logger.WithError(err).Warn("Error closing priority store")
+		}
+	}
+
+	// Close dynamic config watchers
+	if app.DynamicConfig != nil {
+		if err := app.DynamicConfig.Close(); err != nil {
+			app.Logger.WithError(err).Warn("Error closing dynamic config store")
 		}
 	}
 
