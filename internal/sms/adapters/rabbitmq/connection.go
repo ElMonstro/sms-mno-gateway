@@ -144,6 +144,15 @@ func (c *Connection) Close() error {
 	return nil
 }
 
+// NewChannel opens a fresh, dedicated AMQP channel on the current connection.
+// Use this when a component needs its own channel isolated from the shared one
+// (e.g. a background consumer that also publishes).
+func (c *Connection) NewChannel() (*amqp.Channel, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn.Channel()
+}
+
 // DeclareQueue declares a durable queue with no special arguments.
 func (c *Connection) DeclareQueue(ctx context.Context, name string) error {
 	c.mu.RLock()

@@ -6,6 +6,10 @@
 *.dylib
 /bin/
 /build/
+/sms-gateway
+/gateway
+/dlq-migrator
+/queue-monitor
 
 # Test binary
 *.test

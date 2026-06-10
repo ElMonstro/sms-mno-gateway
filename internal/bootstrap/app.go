@@ -2,9 +2,11 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sony/gobreaker"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/api"
@@ -531,6 +533,9 @@ func (app *App) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start DLQ migrator as an isolated background goroutine
+	app.startDLQMigrator(ctx)
+
 	// Start HTTP server in a goroutine
 	go func() {
 		if err := app.HTTPServer.Start(); err != nil {
@@ -539,6 +544,77 @@ func (app *App) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+const dlqPermQueue = "SMS_DEAD_LETTER_QUEUE_PERM"
+
+// startDLQMigrator listens on SMS_DEAD_LETTER_QUEUE and forwards messages to
+// sms_transactional (max-retry exceeded) or SMS_DEAD_LETTER_QUEUE_PERM (all others).
+// It runs on its own dedicated AMQP channel so it cannot affect the main worker pool.
+func (app *App) startDLQMigrator(ctx context.Context) {
+	go func() {
+		ch, err := app.RabbitConn.NewChannel()
+		if err != nil {
+			app.Logger.WithError(err).Error("DLQ migrator: failed to open channel")
+			return
+		}
+		defer ch.Close()
+
+		if _, err := ch.QueueDeclare(dlqPermQueue, true, false, false, false, nil); err != nil {
+			app.Logger.WithError(err).Errorf("DLQ migrator: failed to declare %s", dlqPermQueue)
+			return
+		}
+
+		dlq := app.Config.Queues.DeadLetterQueue
+		msgs, err := ch.Consume(dlq, "dlq-migrator", false, false, false, false, nil)
+		if err != nil {
+			app.Logger.WithError(err).Errorf("DLQ migrator: failed to consume from %s", dlq)
+			return
+		}
+
+		app.Logger.Infof("DLQ migrator started — listening on %s", dlq)
+
+		for {
+			select {
+			case d, ok := <-msgs:
+				if !ok {
+					app.Logger.Warn("DLQ migrator: channel closed")
+					return
+				}
+
+				dest := dlqPermQueue
+				var payloads []struct {
+					Description string `json:"description"`
+				}
+				if err := json.Unmarshal(d.Body, &payloads); err == nil {
+					for _, p := range payloads {
+						if p.Description == "maximum retry count exceeded" {
+							dest = "sms_transactional"
+							break
+						}
+					}
+				}
+
+				err := ch.PublishWithContext(ctx, "", dest, false, false, amqp.Publishing{
+					ContentType:  "application/json",
+					DeliveryMode: amqp.Persistent,
+					Body:         d.Body,
+				})
+				if err != nil {
+					app.Logger.WithError(err).Error("DLQ migrator: publish failed — requeuing")
+					d.Nack(false, true)
+					continue
+				}
+
+				app.Logger.Infof("DLQ migrator: forwarded batch to %s", dest)
+				d.Ack(false)
+
+			case <-ctx.Done():
+				app.Logger.Info("DLQ migrator stopped")
+				return
+			}
+		}
+	}()
 }
 
 // accumulateBatch collects up to maxMsgs messages across successive deliveries.
