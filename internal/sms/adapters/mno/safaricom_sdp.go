@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/circuitbreaker"
@@ -226,8 +227,20 @@ func (s *SafaricomSDPSender) executeSend(ctx context.Context, msg *domain.Messag
 	// Execute request
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		s.log.WithError(err).Error("SDP request failed")
-		return domain.NewRetryableResult(msg, domain.ErrMNOUnavailable, time.Since(start))
+		elapsed := time.Since(start)
+		s.log.WithFields(map[string]interface{}{
+			"correlator":       msg.Correlator,
+			"msisdn":           msg.NormalizeMSISDN(),
+			"sender":           msg.Sender,
+			"url":              s.sendURL,
+			"error_type":       classifyHTTPError(err),
+			"elapsed_ms":       elapsed.Milliseconds(),
+			"request_payload":  string(payloadBytes),
+			"content_type":     req.Header.Get("Content-Type"),
+			"x_country":        req.Header.Get("X-Country"),
+			"auth_scheme":      "Bearer",
+		}).WithError(err).Error("SDP request failed")
+		return domain.NewRetryableResult(msg, domain.ErrMNOUnavailable, elapsed)
 	}
 	defer httpclient.DrainBody(resp) // EM-139 fix
 
@@ -398,8 +411,19 @@ func (s *SafaricomSDPSender) SendBatch(ctx context.Context, msgs []*domain.Messa
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		s.log.WithError(err).Error("SDP batch request failed")
-		return s.allRetryable(msgs, domain.ErrMNOUnavailable, time.Since(start))
+		elapsed := time.Since(start)
+		s.log.WithFields(map[string]interface{}{
+			"correlators":     correlators,
+			"count":           len(msgs),
+			"url":             s.sendURL,
+			"error_type":      classifyHTTPError(err),
+			"elapsed_ms":      elapsed.Milliseconds(),
+			"request_payload": string(payloadBytes),
+			"content_type":    req.Header.Get("Content-Type"),
+			"x_country":       req.Header.Get("X-Country"),
+			"auth_scheme":     "Bearer",
+		}).WithError(err).Error("SDP batch request failed")
+		return s.allRetryable(msgs, domain.ErrMNOUnavailable, elapsed)
 	}
 	defer httpclient.DrainBody(resp)
 
@@ -575,8 +599,14 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 		"X-Requested-With": req.Header.Get("X-Requested-With"),
 	}).Debug("SDP auth request headers")
 
+	authStart := time.Now()
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		s.log.WithFields(map[string]interface{}{
+			"url":        s.authURL,
+			"error_type": classifyHTTPError(err),
+			"elapsed_ms": time.Since(authStart).Milliseconds(),
+		}).WithError(err).Error("SDP auth request failed")
 		return "", fmt.Errorf("auth request failed: %w", err)
 	}
 	defer httpclient.DrainBody(resp)
@@ -596,6 +626,37 @@ func (s *SafaricomSDPSender) fetchToken(ctx context.Context) (string, error) {
 	}
 
 	return authResp.Token, nil
+}
+
+// classifyHTTPError returns a short label describing the transport-level failure.
+// Used for structured logging so operators and Safaricom support can quickly
+// identify whether the error originates from a client timeout, an HTTP/2
+// GOAWAY sent by the server, or another transport fault.
+func classifyHTTPError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "GOAWAY"):
+		return "http2_goaway"
+	case strings.Contains(msg, "timeout awaiting response headers"):
+		return "response_header_timeout"
+	case strings.Contains(msg, "context deadline exceeded"):
+		return "request_timeout"
+	case strings.Contains(msg, "connection refused"):
+		return "connection_refused"
+	case strings.Contains(msg, "connection reset"):
+		return "connection_reset"
+	case strings.Contains(msg, "EOF"):
+		return "connection_closed"
+	case strings.Contains(msg, "no such host"):
+		return "dns_error"
+	case strings.Contains(msg, "TLS") || strings.Contains(msg, "tls"):
+		return "tls_error"
+	default:
+		return "transport_error"
+	}
 }
 
 // Network returns the network this sender handles
