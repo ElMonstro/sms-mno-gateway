@@ -30,6 +30,7 @@ type App struct {
 	Logger          logger.Logger
 	Metrics         *metrics.PrometheusMetrics
 	HTTPClient      *httpclient.Client
+	SDPHTTPClient   *httpclient.Client
 	RateLimiter     *ratelimit.Limiter
 	BreakerRegistry *circuitbreaker.BreakerRegistry
 	RedisCache      *redis.TokenCache
@@ -79,9 +80,16 @@ func New(cfg *config.Config) (*App, error) {
 	// 2. Initialize metrics
 	app.Metrics = metrics.New("emalify_sms")
 
-	// 3. Initialize HTTP client (pooled)
+	// 3. Initialize HTTP clients (pooled)
 	app.HTTPClient = httpclient.New(httpclient.DefaultConfig())
-	app.Logger.Info("HTTP client initialized with connection pooling")
+	sdpCfg := httpclient.DefaultConfig()
+	sdpCfg.ResponseHeaderTimeout = cfg.MNO.SafaricomSDP.ResponseHeaderTimeout
+	sdpCfg.Timeout = cfg.MNO.SafaricomSDP.RequestTimeout
+	app.SDPHTTPClient = httpclient.New(sdpCfg)
+	app.Logger.WithFields(map[string]interface{}{
+		"response_header_timeout": cfg.MNO.SafaricomSDP.ResponseHeaderTimeout,
+		"request_timeout":         cfg.MNO.SafaricomSDP.RequestTimeout,
+	}).Info("HTTP clients initialized (shared + SDP-specific)")
 
 	// 4. Initialize rate limiter with main budgets, then attach retry budgets
 	app.RateLimiter = ratelimit.New(&ratelimit.Config{
@@ -209,6 +217,7 @@ func New(cfg *config.Config) (*App, error) {
 	app.MNOFactory = mno.NewFactory(&mno.FactoryConfig{
 		Config:          cfg,
 		HTTPClient:      app.HTTPClient,
+		SDPHTTPClient:   app.SDPHTTPClient,
 		TokenCache:      app.RedisCache,
 		BreakerRegistry: app.BreakerRegistry,
 		Metrics:         app.Metrics,
@@ -764,9 +773,12 @@ func (app *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Close HTTP client
+	// Close HTTP clients
 	if app.HTTPClient != nil {
 		app.HTTPClient.Close()
+	}
+	if app.SDPHTTPClient != nil {
+		app.SDPHTTPClient.Close()
 	}
 
 	app.Logger.Info("Application shutdown complete")

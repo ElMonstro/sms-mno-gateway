@@ -138,6 +138,15 @@ type SDPConfig struct {
 	TokenKey          string
 	TokenTTL          time.Duration
 	PromoSDPBatchSize int
+
+	// ResponseHeaderTimeout is how long to wait for the SDP server to start
+	// sending response headers. Safaricom's endpoint can be very slow (40-50s
+	// observed), so this is configured separately from the shared HTTP client.
+	ResponseHeaderTimeout time.Duration
+
+	// RequestTimeout is the hard ceiling for the entire SDP request lifecycle
+	// (connect + headers + body). Should be slightly above ResponseHeaderTimeout.
+	RequestTimeout time.Duration
 }
 
 // SMPPConfig holds SMPP (Kannel) gateway configuration
@@ -239,9 +248,11 @@ func Load() *Config {
 				Password:          getEnv("SDP_PASSWORD", ""),
 				DLRURL:            getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save"),
 				DLRURLApiV2:       getEnv("SDP_DLR_URL_API_V2", getEnv("SDP_DLR_URL", "https://smsdlr.emalify.com/save")),
-				TokenKey:          getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
-				TokenTTL:          getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
-				PromoSDPBatchSize: getEnvAsInt("SDP_PROMO_BATCH_SIZE", 1),
+				TokenKey:              getEnv("SDP_TOKEN_KEY", "SDP_TOKEN_KEY"),
+				TokenTTL:              getEnvAsDuration("SDP_TOKEN_TTL", 25*time.Minute),
+				PromoSDPBatchSize:     getEnvAsInt("SDP_PROMO_BATCH_SIZE", 1),
+				ResponseHeaderTimeout: getEnvAsDuration("SDP_RESPONSE_HEADER_TIMEOUT", 60*time.Second),
+				RequestTimeout:        getEnvAsDuration("SDP_REQUEST_TIMEOUT", 65*time.Second),
 			},
 			SafaricomSMPP: SMPPConfig{
 				URL:         getEnv("SAFARICOM_SMPP_URL", "http://10.0.0.87:80/cgi-bin/sendsms"),

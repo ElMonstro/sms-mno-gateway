@@ -62,6 +62,10 @@ env:
     value: 25m
   - name: SDP_USER
     value: "4"
+  - name: SDP_RESPONSE_HEADER_TIMEOUT
+    value: 60s
+  - name: SDP_REQUEST_TIMEOUT
+    value: 65s
 
   - name: SAFARICOM_SMPP_URL
     value: http://197.248.69.107:1405/cgi-bin/sendsms

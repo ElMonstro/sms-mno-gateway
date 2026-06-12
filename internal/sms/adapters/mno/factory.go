@@ -27,6 +27,7 @@ type Factory struct {
 type FactoryConfig struct {
 	Config          *config.Config
 	HTTPClient      *httpclient.Client
+	SDPHTTPClient   *httpclient.Client // dedicated client with longer timeouts for Safaricom SDP
 	TokenCache      ports.TokenCache
 	BreakerRegistry *circuitbreaker.BreakerRegistry
 	Metrics         ports.Metrics
@@ -40,6 +41,11 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 	// Configure the DLR gateway queue name so BaseSMPPSender can select
 	// the correct DLR URL based on the message's source queue.
 	SetGatewayQueueName(cfg.Config.Queues.GatewayQueueName)
+
+	sdpHTTPClient := cfg.SDPHTTPClient
+	if sdpHTTPClient == nil {
+		sdpHTTPClient = cfg.HTTPClient
+	}
 
 	// Get circuit breakers
 	safCB, _ := cfg.BreakerRegistry.Get(domain.NetworkSafaricom)
@@ -64,7 +70,7 @@ func NewFactory(cfg *FactoryConfig) *Factory {
 			TokenTTL:       mnoCfg.SafaricomSDP.TokenTTL,
 			BatchSize:      mnoCfg.SafaricomSDP.PromoSDPBatchSize,
 			TokenCache:     cfg.TokenCache,
-			HTTPClient:     cfg.HTTPClient,
+			HTTPClient:     sdpHTTPClient,
 			CircuitBreaker: safCB,
 			Metrics:        cfg.Metrics,
 			Logger:         log,
