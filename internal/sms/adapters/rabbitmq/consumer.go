@@ -95,6 +95,11 @@ func (c *Consumer) Consume(ctx context.Context) (<-chan ports.Delivery, error) {
 					continue
 				}
 
+				c.log.WithFields(map[string]interface{}{
+					"queue":   c.queueName,
+					"payload": string(msg.Body),
+				}).Debug("message consumed")
+
 				delivery := &Delivery{
 					messages: messages,
 					amqpMsg:  msg,
