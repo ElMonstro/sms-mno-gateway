@@ -545,6 +545,9 @@ func (app *App) Start(ctx context.Context) error {
 	// Start DLQ migrator as an isolated background goroutine
 	app.startDLQMigrator(ctx)
 
+	// Start SaveToDB DLQ migrator as an isolated background goroutine
+	app.startSaveToDBDLQMigrator(ctx)
+
 	// Start HTTP server in a goroutine
 	go func() {
 		if err := app.HTTPServer.Start(); err != nil {
@@ -655,6 +658,89 @@ func (app *App) runDLQMigratorOnce(ctx context.Context) error {
 
 		case <-ctx.Done():
 			app.Logger.Info("DLQ migrator stopped")
+			return nil
+		}
+	}
+}
+
+// startSaveToDBDLQMigrator launches the SaveToDB DLQ migrator as an isolated background goroutine.
+// It restarts automatically on channel/connection loss. Disabled via SAVE_TO_DB_DLQ_MIGRATOR_ENABLED=false.
+func (app *App) startSaveToDBDLQMigrator(ctx context.Context) {
+	if !app.Config.Queues.SaveToDBDLQMigratorEnabled {
+		app.Logger.Info("SaveToDB DLQ migrator disabled — skipping")
+		return
+	}
+
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			if err := app.runSaveToDBDLQMigratorOnce(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				app.Logger.WithError(err).Warn("SaveToDB DLQ migrator: restarting in 5s")
+				app.Metrics.IncSaveToDBDLQMigratorChannelRestart()
+				select {
+				case <-time.After(5 * time.Second):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+}
+
+// runSaveToDBDLQMigratorOnce opens a channel, consumes from SAVE_TO_DB_DLQ, and forwards
+// each delivery back to SAVE_TO_DB until the channel closes or ctx is cancelled.
+func (app *App) runSaveToDBDLQMigratorOnce(ctx context.Context) error {
+	ch, err := app.RabbitConn.NewChannel()
+	if err != nil {
+		return fmt.Errorf("open channel: %w", err)
+	}
+	defer ch.Close()
+
+	srcQueue := app.Config.Queues.SaveToDBDLQ
+	destQueue := app.Config.Queues.SaveToDBQueue
+	for _, q := range []string{srcQueue, destQueue} {
+		if _, err := ch.QueueDeclare(q, true, false, false, false, nil); err != nil {
+			return fmt.Errorf("declare %s: %w", q, err)
+		}
+	}
+
+	msgs, err := ch.Consume(srcQueue, "save-to-db-dlq-migrator", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume %s: %w", srcQueue, err)
+	}
+
+	app.Logger.Infof("SaveToDB DLQ migrator started — listening on %s", srcQueue)
+
+	for {
+		select {
+		case d, ok := <-msgs:
+			if !ok {
+				return fmt.Errorf("channel closed")
+			}
+
+			if err := ch.PublishWithContext(ctx, "", destQueue, false, false, amqp.Publishing{
+				ContentType:  "application/json",
+				DeliveryMode: amqp.Persistent,
+				Body:         d.Body,
+			}); err != nil {
+				app.Logger.WithError(err).Error("SaveToDB DLQ migrator: publish failed — requeuing")
+				app.Metrics.IncSaveToDBDLQMigratorPublishError()
+				d.Nack(false, true)
+				continue
+			}
+
+			app.Logger.Infof("SaveToDB DLQ migrator: forwarded delivery to %s", destQueue)
+			app.Metrics.IncSaveToDBDLQMigratorForwarded()
+			d.Ack(false)
+
+		case <-ctx.Done():
+			app.Logger.Info("SaveToDB DLQ migrator stopped")
 			return nil
 		}
 	}

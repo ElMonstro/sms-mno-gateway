@@ -51,6 +51,11 @@ type PrometheusMetrics struct {
 	dlqMigratorForwarded       *prometheus.CounterVec
 	dlqMigratorPublishErrors   prometheus.Counter
 	dlqMigratorChannelRestarts prometheus.Counter
+
+	// SaveToDB DLQ migrator metrics
+	saveToDBDLQForwarded      prometheus.Counter
+	saveToDBDLQPublishErrors  prometheus.Counter
+	saveToDBDLQChannelRestart prometheus.Counter
 }
 
 // New creates a new Prometheus metrics instance
@@ -229,6 +234,27 @@ func New(namespace string) *PrometheusMetrics {
 				Help:      "Total channel restarts due to connection loss in the DLQ migrator",
 			},
 		),
+		saveToDBDLQForwarded: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "save_to_db_dlq_migrator_forwarded_total",
+				Help:      "Total deliveries forwarded from SAVE_TO_DB_DLQ to SAVE_TO_DB",
+			},
+		),
+		saveToDBDLQPublishErrors: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "save_to_db_dlq_migrator_publish_errors_total",
+				Help:      "Total publish errors in the SaveToDB DLQ migrator",
+			},
+		),
+		saveToDBDLQChannelRestart: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "save_to_db_dlq_migrator_channel_restarts_total",
+				Help:      "Total channel restarts in the SaveToDB DLQ migrator",
+			},
+		),
 	}
 }
 
@@ -352,6 +378,18 @@ func (m *PrometheusMetrics) IncDLQMigratorChannelRestart() {
 	m.dlqMigratorChannelRestarts.Inc()
 }
 
+func (m *PrometheusMetrics) IncSaveToDBDLQMigratorForwarded() {
+	m.saveToDBDLQForwarded.Inc()
+}
+
+func (m *PrometheusMetrics) IncSaveToDBDLQMigratorPublishError() {
+	m.saveToDBDLQPublishErrors.Inc()
+}
+
+func (m *PrometheusMetrics) IncSaveToDBDLQMigratorChannelRestart() {
+	m.saveToDBDLQChannelRestart.Inc()
+}
+
 // Ensure PrometheusMetrics implements ports.Metrics
 var _ ports.Metrics = (*PrometheusMetrics)(nil)
 
@@ -377,8 +415,11 @@ func (m *NoopMetrics) SetTransactionalQueueDepth(depth int)        {}
 func (m *NoopMetrics) IncSchedulerProcessed(queue string)          {}
 func (m *NoopMetrics) SetSchedulerWeight(queue string, weight int) {}
 func (m *NoopMetrics) IncStarvationTriggers(queue string)     {}
-func (m *NoopMetrics) IncDLQMigratorForwarded(dest string)    {}
-func (m *NoopMetrics) IncDLQMigratorPublishError()            {}
-func (m *NoopMetrics) IncDLQMigratorChannelRestart()          {}
+func (m *NoopMetrics) IncDLQMigratorForwarded(dest string)         {}
+func (m *NoopMetrics) IncDLQMigratorPublishError()                 {}
+func (m *NoopMetrics) IncDLQMigratorChannelRestart()               {}
+func (m *NoopMetrics) IncSaveToDBDLQMigratorForwarded()            {}
+func (m *NoopMetrics) IncSaveToDBDLQMigratorPublishError()         {}
+func (m *NoopMetrics) IncSaveToDBDLQMigratorChannelRestart()       {}
 
 var _ ports.Metrics = (*NoopMetrics)(nil)
