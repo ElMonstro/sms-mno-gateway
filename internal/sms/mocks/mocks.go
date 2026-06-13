@@ -461,6 +461,10 @@ func (m *MockMetrics) IncDLQMigratorChannelRestart() {
 	m.ProcessedCounts["dlq_channel_restarts"]++
 }
 
+func (m *MockMetrics) IncSaveToDBDLQMigratorForwarded()      {}
+func (m *MockMetrics) IncSaveToDBDLQMigratorPublishError()   {}
+func (m *MockMetrics) IncSaveToDBDLQMigratorChannelRestart() {}
+
 // MockDelivery is a mock implementation of ports.Delivery
 type MockDelivery struct {
 	Data       []byte

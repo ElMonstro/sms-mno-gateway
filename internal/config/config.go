@@ -83,6 +83,10 @@ type QueuesConfig struct {
 	DLQMigratorEnabled   bool
 	DLQMigratorDestQueue string // queue that receives max-retry-exceeded messages
 	DLQPermQueue         string // permanent DLQ for unrecoverable messages
+
+	// SaveToDB DLQ migrator — moves messages from SaveToDBDLQ back into SaveToDBQueue.
+	SaveToDBDLQ                string
+	SaveToDBDLQMigratorEnabled bool
 }
 
 // RetryConfig holds configuration for the split retry consumer pools
@@ -234,9 +238,11 @@ func Load() *Config {
 			TransactionalDelayQueue: getEnv("SMS_TRANSACTIONAL_DELAY_QUEUE", "SMS_TRANSACTIONAL_DELAY_QUEUE"),
 			PromotionalDelayQueue:   getEnv("SMS_PROMOTIONAL_DELAY_QUEUE", "SMS_PROMOTIONAL_DELAY_QUEUE"),
 			SDPBatchSizes:           getEnvAsQueueWeights("QUEUE_SDP_BATCH_SIZES", nil),
-			DLQMigratorEnabled:      getEnvAsBool("DLQ_MIGRATOR_ENABLED", true),
-			DLQMigratorDestQueue:    getEnv("DLQ_MIGRATOR_DEST_QUEUE", "sms_transactional"),
-			DLQPermQueue:            getEnv("DLQ_PERM_QUEUE", "SMS_DEAD_LETTER_QUEUE_PERM"),
+			DLQMigratorEnabled:         getEnvAsBool("DLQ_MIGRATOR_ENABLED", true),
+			DLQMigratorDestQueue:       getEnv("DLQ_MIGRATOR_DEST_QUEUE", "sms_transactional"),
+			DLQPermQueue:               getEnv("DLQ_PERM_QUEUE", "SMS_DEAD_LETTER_QUEUE_PERM"),
+			SaveToDBDLQ:                getEnv("SAVE_TO_DB_DLQ", "SAVE_TO_DB_DLQ"),
+			SaveToDBDLQMigratorEnabled: getEnvAsBool("SAVE_TO_DB_DLQ_MIGRATOR_ENABLED", true),
 		},
 		MNO: MNOConfig{
 			SafaricomSDP: SDPConfig{

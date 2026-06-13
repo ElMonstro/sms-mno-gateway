@@ -46,6 +46,11 @@ type Metrics interface {
 	IncDLQMigratorForwarded(dest string)
 	IncDLQMigratorPublishError()
 	IncDLQMigratorChannelRestart()
+
+	// SaveToDB DLQ migrator metrics
+	IncSaveToDBDLQMigratorForwarded()
+	IncSaveToDBDLQMigratorPublishError()
+	IncSaveToDBDLQMigratorChannelRestart()
 }
 
 // MetricLabels contains common labels for metrics
