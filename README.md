@@ -8,7 +8,7 @@ This service consolidates two legacy services (`ApiGateway` and `sendtomnohandle
 
 - Consumes SMS messages from configurable RabbitMQ queues
 - Routes messages to the appropriate MNO based on network and message type
-- Handles retries, circuit breaking, and rate limiting
+- Handles retries, circuit breaking, and rate limiting 
 - Publishes results to downstream queues for persistence
 
 ```mermaid
