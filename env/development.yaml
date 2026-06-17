@@ -1,0 +1,224 @@
+type: go
+
+#ingress: true
+migrations: false
+health_check_path: "/health"
+
+env:
+  - name: APP_ENV
+    value: development
+  - name: LOG_LEVEL
+    value: debug
+  - name: WORKER_COUNT
+    value: "150"
+
+  - name: HTTP_PORT
+    value: "8080"
+  - name: HTTP_READ_TIMEOUT
+    value: 30s
+  - name: HTTP_WRITE_TIMEOUT
+    value: 30s
+  - name: HTTP_IDLE_TIMEOUT
+    value: 60s
+
+  - name: RABBITMQ_PREFETCH
+    value: "300"
+  - name: RABBITMQ_RECONNECT_WAIT
+    value: 5s
+
+  - name: INPUT_QUEUES
+    value: APEX_QUEUE,sms_transactional,SMS_MNO_GATEWAY_QUEUE,SMS_RETRY_QUEUE,TITANIC-KE_SMS_QUEUE,GOLD_PARTNERS_QUEUE,BETIKA_GOLD,PEPETA_GOLD,SMS_TRANSACTIONAL_RETRY_QUEUE,SMS_PROMOTIONAL_RETRY_QUEUE
+  - name: SAVE_TO_DB_QUEUE
+    value: SAVE_TO_DB
+  - name: SMS_RETRY_QUEUE
+    value: SMS_RETRY_QUEUE
+  - name: SMS_DEAD_LETTER_QUEUE
+    value: SMS_DEAD_LETTER_QUEUE
+  - name: SAVE_TO_DB_DLQ
+    value: SAVE_TO_DB_DLQ
+  - name: SAVE_TO_DB_DLQ_MIGRATOR_ENABLED
+    value: "true"
+  - name: SMS_TRANSACTIONAL_RETRY_QUEUE
+    value: SMS_TRANSACTIONAL_RETRY_QUEUE
+  - name: SMS_PROMOTIONAL_RETRY_QUEUE
+    value: SMS_PROMOTIONAL_RETRY_QUEUE
+  - name: SMS_TRANSACTIONAL_DELAY_QUEUE
+    value: SMS_TRANSACTIONAL_DELAY_QUEUE
+  - name: SMS_PROMOTIONAL_DELAY_QUEUE
+    value: SMS_PROMOTIONAL_DELAY_QUEUE
+
+  - name: SDP_AUTH_URL
+    value: https://dsdp-apinb.safaricom.com/api/auth/login
+  - name: SDP_SEND_URL
+    value: https://dsdp-apinb.safaricom.com/api/public/CMS/bulksms
+  - name: SDP_DLR_URL
+    value: https://bizdlr.emalify.com/save
+  - name: SDP_DLR_URL_API_V2
+    value: https://gateway-dlr-handler.emalify.com/save
+  - name: SDP_TOKEN_KEY
+    value: roamtech
+  - name: SDP_TOKEN_TTL
+    value: 25m
+  - name: SDP_USER
+    value: "4"
+  - name: SDP_RESPONSE_HEADER_TIMEOUT
+    value: 90s
+  - name: SDP_REQUEST_TIMEOUT
+    value: 95s
+
+  - name: SAFARICOM_SMPP_URL
+    value: http://197.248.69.107:1405/cgi-bin/sendsms
+  - name: SAFARICOM_SMPP_SMSC
+    value: SAFCOMTX
+  - name: SAFARICOM_SMPP_DLR_URL
+    value: https://bizdlr.emalify.com/save
+  - name: SAFARICOM_SMPP_DLR_URL_API_V2
+    value: https://gateway-dlr-handler.emalify.com/save
+
+  - name: AIRTEL_SMPP_URL
+    value: http://105.21.40.34:1404/cgi-bin/sendsms
+  - name: AIRTEL_SMPP_SMSC
+    value: AIRTEL_TRANS
+  - name: AIRTEL_SMPP_DLR_URL
+    value: https://bizdlr.emalify.com/save
+  - name: AIRTEL_SMPP_DLR_URL_API_V2
+    value: https://gateway-dlr-handler.emalify.com/save
+
+  - name: AIRTEL_SMPP_URL_PROMO
+    value: http://105.21.40.34:1404/cgi-bin/sendsms
+  - name: AIRTEL_SMPP_SMSC_PROMO
+    value: AIRTEL_PROMO
+  - name: AIRTEL_SMPP_DLR_URL_PROMO
+    value: https://bizdlr.emalify.com/save
+  - name: AIRTEL_SMPP_DLR_URL_PROMO_API_V2
+    value: https://gateway-dlr-handler.emalify.com/save
+
+  - name: TELKOM_SMPP_URL
+    value: http://34.77.25.98:14013/cgi-bin/sendsms
+  - name: TELKOM_SMPP_SMSC
+    value: TELKOM
+  - name: TELKOM_SMPP_DLR_URL
+    value: http://105.27.237.35:9088/save
+  - name: TELKOM_SMPP_DLR_URL_API_V2
+    value: https://bizdlr.emalify.com/save
+
+  - name: EQUITEL_SMPP_URL
+    value: http://197.248.69.107:1405/cgi-bin/sendsms
+  - name: EQUITEL_SMPP_SMSC
+    value: EQUITEL
+  - name: EQUITEL_SMPP_DLR_URL
+    value: https://bizdlr.emalify.com/save
+  - name: EQUITEL_SMPP_DLR_URL_API_V2
+    value: https://gateway-dlr-handler.emalify.com/save
+
+  - name: CM_SMPP_URL
+    value: http://34.77.25.98:14013/cgi-bin/sendsms
+  - name: CM_SMPP_SMSC
+    value: CM
+  - name: CM_SMPP_DLR_URL
+    value: https://bizdlr.emalify.com/save
+
+  - name: RATE_LIMIT_SAFARICOM
+    value: "550"
+  - name: RATE_LIMIT_AIRTEL
+    value: "150"
+  - name: RATE_LIMIT_TELKOM
+    value: "100"
+  - name: RATE_LIMIT_EQUITEL
+    value: "50"
+  - name: RATE_LIMIT_CM
+    value: "20"
+  - name: RATE_LIMIT_DEFAULT
+    value: "20"
+
+  - name: RETRY_TRANSACTIONAL_DELAY_MS
+    value: "10000"
+  - name: RETRY_PROMOTIONAL_DELAY_MS
+    value: "30000"
+  - name: RETRY_TRANSACTIONAL_WORKER_COUNT
+    value: "50"
+  - name: RETRY_TRANSACTIONAL_PREFETCH
+    value: "80"
+  - name: RETRY_PROMOTIONAL_WORKER_COUNT
+    value: "200"
+  - name: RETRY_PROMOTIONAL_PREFETCH
+    value: "400"
+  - name: RATE_LIMIT_RETRY_SAFARICOM_SDP
+    value: "200"
+  - name: RATE_LIMIT_RETRY_SAFARICOM_SMPP
+    value: "40"
+  - name: RATE_LIMIT_RETRY_AIRTEL
+    value: "5"
+  - name: RATE_LIMIT_RETRY_EQUITEL
+    value: "10"
+  - name: RATE_LIMIT_RETRY_TELKOM
+    value: "10"
+  - name: RATE_LIMIT_RETRY_CM
+    value: "5"
+  - name: RATE_LIMIT_RETRY_BURST_FACTOR
+    value: "1"
+  - name: RETRY_MAX_RETRIES_TRANSACTIONAL
+    value: "5"
+  - name: RETRY_MAX_RETRIES_PROMOTIONAL
+    value: "10"
+
+  - name: PRIORITY_ROUTING_ENABLED
+    value: "true"
+  - name: PRIORITY_DEFAULT_WEIGHTS
+    value: APEX_QUEUE:25,sms_transactional:8,SMS_MNO_GATEWAY_QUEUE:8,GOLD_PARTNERS_QUEUE:10,BETIKA_GOLD:10,PEPETA_GOLD:7,TITANIC-KE_SMS_QUEUE:30
+  - name: PRIORITY_CREDIT_MULTIPLIER
+    value: "10"
+  - name: PRIORITY_REFILL_PERIOD_MS
+    value: "100"
+  - name: PRIORITY_MAX_STARVATION_AGE_SEC
+    value: "10"
+  - name: PRIORITY_TRANSACTIONAL_WORKERS
+    value: "10"
+
+  - name: PRIORITY_PROMOTIONAL_REDIS_KEY
+    value: sms:priority:promotional_weights
+  - name: PRIORITY_PROMOTIONAL_WEIGHTS
+    value: SMS_MNO_GATEWAY_QUEUE:8,SMS_RETRY_QUEUE:20,BETIKA_GOLD:10,PEPETA_GOLD:7,TITANIC-KE_SMS_QUEUE:30,GOLD_PARTNERS_QUEUE:10
+  - name: PRIORITY_PROMOTIONAL_DEFAULT_WEIGHT
+    value: "1"
+  - name: PRIORITY_PROMOTIONAL_CREDIT_MULTIPLIER
+    value: "10"
+  - name: PRIORITY_PROMOTIONAL_REFILL_PERIOD_MS
+    value: "100"
+  - name: PRIORITY_PROMOTIONAL_MAX_STARVATION_AGE_SEC
+    value: "10"
+
+  - name: PRIORITY_TRANSACTIONAL_REDIS_KEY
+    value: sms:priority:transactional_weights
+  - name: PRIORITY_TRANSACTIONAL_WEIGHTS
+    value: SMS_RETRY_QUEUE:5
+  - name: PRIORITY_TRANSACTIONAL_DEFAULT_WEIGHT
+    value: "1"
+  - name: PRIORITY_TRANSACTIONAL_CREDIT_MULTIPLIER
+    value: "10"
+  - name: PRIORITY_TRANSACTIONAL_REFILL_PERIOD_MS
+    value: "100"
+  - name: PRIORITY_TRANSACTIONAL_MAX_STARVATION_AGE_SEC
+    value: "10"
+  - name: COUNTRY_PREFIX
+    value: "KEN"
+
+secrets:
+  - SDP_USERNAME
+  - SDP_PASSWORD
+  - SAFARICOM_SMPP_USERNAME
+  - SAFARICOM_SMPP_PASSWORD
+  - AIRTEL_SMPP_USERNAME
+  - AIRTEL_SMPP_PASSWORD
+  - AIRTEL_SMPP_USERNAME_PROMO
+  - AIRTEL_SMPP_PASSWORD_PROMO
+  - TELKOM_SMPP_USERNAME
+  - TELKOM_SMPP_PASSWORD
+  - EQUITEL_SMPP_USERNAME
+  - EQUITEL_SMPP_PASSWORD
+  - CM_SMPP_USERNAME
+  - CM_SMPP_PASSWORD
+
+requires:
+  - rabbitmq
+  - redis
