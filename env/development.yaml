@@ -1,5 +1,4 @@
 type: go
-
 #ingress: true
 migrations: false
 health_check_path: "/health"
