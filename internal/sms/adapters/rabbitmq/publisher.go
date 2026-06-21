@@ -3,6 +3,8 @@ package rabbitmq
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -11,12 +13,20 @@ import (
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/ports"
 )
 
-// Publisher implements the ports.QueuePublisher interface
+// Publisher implements the ports.QueuePublisher interface.
+// It owns a dedicated AMQP channel that is isolated from consumer channels and
+// the shared connection channel, preventing cross-contamination of channel errors.
+// All Publish/PublishBatch calls are serialised through a mutex so concurrent
+// callers share a single channel safely (amqp091-go channels serialize internally
+// but we also guard channel replacement during reconnect).
 type Publisher struct {
 	conn             *Connection
 	queues           ports.QueueConfig
 	gatewayQueueName string
 	log              logger.Logger
+
+	mu      sync.Mutex
+	channel *amqp.Channel
 }
 
 // PublisherConfig holds configuration for the publisher
@@ -45,6 +55,15 @@ func NewPublisher(cfg *PublisherConfig) (*Publisher, error) {
 		gatewayQueueName: cfg.GatewayQueueName,
 		log:              cfg.Logger,
 	}
+
+	// Open a dedicated channel for publishing — isolated from the shared connection
+	// channel and from consumer channels so a channel-level error in one direction
+	// does not affect the other.
+	ch, err := cfg.Connection.NewChannel()
+	if err != nil {
+		return nil, fmt.Errorf("open publisher channel: %w", err)
+	}
+	p.channel = ch
 
 	ctx := context.Background()
 
@@ -82,15 +101,34 @@ func NewPublisher(cfg *PublisherConfig) (*Publisher, error) {
 	return p, nil
 }
 
-// Publish publishes a single message to a queue
-func (p *Publisher) Publish(ctx context.Context, queueName string, msg *domain.Message) error {
-	body, err := json.Marshal(msg)
+// channel returns the current publish channel, reopening it if closed.
+// Must be called with p.mu held.
+func (p *Publisher) getChannel() (*amqp.Channel, error) {
+	if p.channel != nil && !p.channel.IsClosed() {
+		return p.channel, nil
+	}
+
+	ch, err := p.conn.NewChannel()
+	if err != nil {
+		return nil, fmt.Errorf("reopen publisher channel: %w", err)
+	}
+	p.channel = ch
+	p.log.Info("Publisher channel reopened")
+	return ch, nil
+}
+
+// publish is the internal helper that serialises all writes through the publisher
+// mutex and transparently reopens the channel on failure.
+func (p *Publisher) publish(ctx context.Context, queueName string, body []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ch, err := p.getChannel()
 	if err != nil {
 		return err
 	}
 
-	channel := p.conn.Channel()
-	return channel.PublishWithContext(
+	err = ch.PublishWithContext(
 		ctx,
 		"",        // exchange
 		queueName, // routing key (queue name)
@@ -102,6 +140,20 @@ func (p *Publisher) Publish(ctx context.Context, queueName string, msg *domain.M
 			DeliveryMode: amqp.Persistent,
 		},
 	)
+	if err != nil {
+		// Channel may have been closed mid-publish; next call will reopen it.
+		p.log.WithError(err).WithField("queue", queueName).Warn("Publish failed, channel will be reopened on next attempt")
+	}
+	return err
+}
+
+// Publish publishes a single message to a queue
+func (p *Publisher) Publish(ctx context.Context, queueName string, msg *domain.Message) error {
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return p.publish(ctx, queueName, body)
 }
 
 // PublishBatch publishes multiple messages as a single AMQP message to a queue.
@@ -111,20 +163,7 @@ func (p *Publisher) PublishBatch(ctx context.Context, queueName string, msgs []*
 	if err != nil {
 		return err
 	}
-
-	channel := p.conn.Channel()
-	return channel.PublishWithContext(
-		ctx,
-		"",        // exchange
-		queueName, // routing key
-		false,     // mandatory
-		false,     // immediate
-		amqp.Publishing{
-			ContentType:  "application/json",
-			Body:         body,
-			DeliveryMode: amqp.Persistent,
-		},
-	)
+	return p.publish(ctx, queueName, body)
 }
 
 // PublishResult publishes a send result to the appropriate queue.
@@ -148,7 +187,7 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 		queueName = p.queues.SaveToDBQueue
 	}
 
-	p.log.WithFields(map[string]interface{}{
+	p.log.WithFields(map[string]any{
 		"correlator": result.Message.Correlator,
 		"result":     result.Type.String(),
 		"queue":      queueName,
@@ -160,7 +199,7 @@ func (p *Publisher) PublishResult(ctx context.Context, result *domain.SendResult
 
 	// Permanent failures are also saved to DB with status FAILED TO SEND
 	if result.Type == domain.ResultPermanent {
-		p.log.WithFields(map[string]interface{}{
+		p.log.WithFields(map[string]any{
 			"correlator": result.Message.Correlator,
 			"queue":      p.queues.SaveToDBQueue,
 		}).Debug("Publishing permanent failure to SAVE_TO_DB")
@@ -226,7 +265,7 @@ func (p *Publisher) PublishBatchResults(ctx context.Context, results *domain.Bat
 		}
 	}
 
-	p.log.WithFields(map[string]interface{}{
+	p.log.WithFields(map[string]any{
 		"successful": results.SuccessCount(),
 		"retryable":  results.RetryableCount(),
 		"failed":     results.FailedCount(),
@@ -235,9 +274,14 @@ func (p *Publisher) PublishBatchResults(ctx context.Context, results *domain.Bat
 	return nil
 }
 
-// Close closes the publisher
+// Close closes the publisher channel
 func (p *Publisher) Close() error {
-	return nil // Connection managed separately
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.channel != nil {
+		return p.channel.Close()
+	}
+	return nil
 }
 
 // IsConnected returns true if connected

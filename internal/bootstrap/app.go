@@ -327,10 +327,11 @@ func New(cfg *config.Config) (*App, error) {
 	// 14. Initialize consumers for input queues
 	for _, queueName := range cfg.Queues.InputQueues {
 		consumer, err := rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
-			Connection: app.RabbitConn,
-			QueueName:  queueName,
-			Prefetch:   cfg.RabbitMQ.PrefetchCount,
-			Logger:     app.Logger,
+			Connection:    app.RabbitConn,
+			QueueName:     queueName,
+			Prefetch:      cfg.RabbitMQ.PrefetchCount,
+			ReconnectWait: cfg.RabbitMQ.ReconnectWait,
+			Logger:        app.Logger,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create consumer for %s: %w", queueName, err)
@@ -342,10 +343,11 @@ func New(cfg *config.Config) (*App, error) {
 	// 15. Initialize dedicated retry consumers and processors
 	// Each retry pool has its own prefetch and worker budget, isolated from main queues.
 	app.TransactionalRetryConsumer, err = rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
-		Connection: app.RabbitConn,
-		QueueName:  cfg.Queues.TransactionalRetryQueue,
-		Prefetch:   cfg.Retry.TransactionalPrefetch,
-		Logger:     app.Logger,
+		Connection:    app.RabbitConn,
+		QueueName:     cfg.Queues.TransactionalRetryQueue,
+		Prefetch:      cfg.Retry.TransactionalPrefetch,
+		ReconnectWait: cfg.RabbitMQ.ReconnectWait,
+		Logger:        app.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transactional retry consumer: %w", err)
@@ -354,10 +356,11 @@ func New(cfg *config.Config) (*App, error) {
 		cfg.Queues.TransactionalRetryQueue, cfg.Retry.TransactionalPrefetch)
 
 	app.PromotionalRetryConsumer, err = rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
-		Connection: app.RabbitConn,
-		QueueName:  cfg.Queues.PromotionalRetryQueue,
-		Prefetch:   cfg.Retry.PromotionalPrefetch,
-		Logger:     app.Logger,
+		Connection:    app.RabbitConn,
+		QueueName:     cfg.Queues.PromotionalRetryQueue,
+		Prefetch:      cfg.Retry.PromotionalPrefetch,
+		ReconnectWait: cfg.RabbitMQ.ReconnectWait,
+		Logger:        app.Logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create promotional retry consumer: %w", err)
