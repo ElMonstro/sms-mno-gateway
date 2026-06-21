@@ -49,6 +49,13 @@ func (c *Connection) connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Close the old connection before replacing it so we don't leak TCP sockets.
+	// The old connection may already be closed (that's what triggered a reconnect),
+	// but calling Close() on a closed amqp.Connection is safe — it's a no-op.
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
 	conn, err := amqp.Dial(c.url)
 	if err != nil {
 		return err
