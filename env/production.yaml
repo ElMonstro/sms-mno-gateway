@@ -228,3 +228,17 @@ secrets:
 requires:
   - rabbitmq
   - redis
+
+replicas: 1
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "100m"
+    ephemeral-storage: 1Gi
+    
+  limits:
+      memory: "1536Mi"
+      cpu: "200m"
+      ephemeral-storage: 1Gi
+      

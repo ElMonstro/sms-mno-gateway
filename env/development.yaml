@@ -226,11 +226,11 @@ replicas: 1
 
 resources:
   requests:
-    memory: "512Mi"
-    cpu: "100m"
-    ephemeral-storage: 1Gi
+    memory: "256Mi"
+    cpu: "50m"
+    ephemeral-storage: 512Mi
     
   limits:
-      memory: "1536Mi"
-      cpu: "200m"
-      ephemeral-storage: 1Gi
+      memory: "512Mi"
+      cpu: "100m"
+      ephemeral-storage: 512Mi
