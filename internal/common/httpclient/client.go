@@ -49,7 +49,7 @@ type Config struct {
 // Optimized for high-throughput SMS sending
 func DefaultConfig() *Config {
 	return &Config{
-		Timeout:               30 * time.Second,
+		Timeout:               60 * time.Second,
 		MaxIdleConns:          500,
 		MaxConnsPerHost:       300,
 		MaxIdleConnsPerHost:   300,
