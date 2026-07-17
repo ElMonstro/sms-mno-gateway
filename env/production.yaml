@@ -33,7 +33,7 @@ env:
     value: 5s
 
   - name: INPUT_QUEUES
-    value: APEX_QUEUE,SMS_MNO_GATEWAY_QUEUE,SMS_RETRY_QUEUE,TITANIC-KE_SMS_QUEUE,GOLD_PARTNERS_QUEUE,BETIKA_GOLD,PEPETA_GOLD,SMS_TRANSACTIONAL_RETRY_QUEUE,SMS_PROMOTIONAL_RETRY_QUEUE,TITANIC-KE_SMS_QUEUE_V2
+    value: APEX_QUEUE,sms_transactional,SMS_MNO_GATEWAY_QUEUE,SMS_RETRY_QUEUE,TITANIC-KE_SMS_QUEUE,GOLD_PARTNERS_QUEUE,BETIKA_GOLD,PEPETA_GOLD,SMS_TRANSACTIONAL_RETRY_QUEUE,SMS_PROMOTIONAL_RETRY_QUEUE,TITANIC-KE_SMS_QUEUE_V2
   - name: SAVE_TO_DB_QUEUE
     value: SAVE_TO_DB
   - name: SMS_RETRY_QUEUE
@@ -58,7 +58,7 @@ env:
   - name: SDP_SEND_URL
     value: https://dsdp-apinb.safaricom.com/api/public/CMS/bulksms
   - name: SDP_DLR_URL
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
   - name: SDP_DLR_URL_API_V2
     value: https://gateway-dlr-handler.emalify.com/save
   - name: SDP_TOKEN_KEY
@@ -77,7 +77,7 @@ env:
   - name: SAFARICOM_SMPP_SMSC
     value: SAFCOMTX
   - name: SAFARICOM_SMPP_DLR_URL
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
   - name: SAFARICOM_SMPP_DLR_URL_API_V2
     value: https://gateway-dlr-handler.emalify.com/save
 
@@ -86,7 +86,7 @@ env:
   - name: AIRTEL_SMPP_SMSC
     value: AIRTEL_TRANS
   - name: AIRTEL_SMPP_DLR_URL
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
   - name: AIRTEL_SMPP_DLR_URL_API_V2
     value: https://gateway-dlr-handler.emalify.com/save
 
@@ -95,7 +95,7 @@ env:
   - name: AIRTEL_SMPP_SMSC_PROMO
     value: AIRTEL_PROMO
   - name: AIRTEL_SMPP_DLR_URL_PROMO
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
   - name: AIRTEL_SMPP_DLR_URL_PROMO_API_V2
     value: https://gateway-dlr-handler.emalify.com/save
 
@@ -106,14 +106,14 @@ env:
   - name: TELKOM_SMPP_DLR_URL
     value: http://105.27.237.35:9088/save
   - name: TELKOM_SMPP_DLR_URL_API_V2
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
 
   - name: EQUITEL_SMPP_URL
     value: http://197.248.69.107:1405/cgi-bin/sendsms
   - name: EQUITEL_SMPP_SMSC
     value: EQUITEL
   - name: EQUITEL_SMPP_DLR_URL
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
   - name: EQUITEL_SMPP_DLR_URL_API_V2
     value: https://gateway-dlr-handler.emalify.com/save
 
@@ -122,7 +122,7 @@ env:
   - name: CM_SMPP_SMSC
     value: CM
   - name: CM_SMPP_DLR_URL
-    value: https://business-dlr.emalify.com/save
+    value: https://bizdlr.emalify.com/save
 
   - name: RATE_LIMIT_SAFARICOM
     value: "550"
