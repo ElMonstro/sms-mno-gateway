@@ -23,6 +23,16 @@ type Message struct {
 	// Set at consumption time and used to select the correct DLR URL.
 	// Not serialized — runtime only.
 	SourceQueue string `json:"-"`
+
+	// The fields below are populated only for AfricasTalking (international) messages
+	// consumed from AFRICAS_TALKING_SMS_QUEUE. They are informational/pass-through for
+	// every other network.
+	OutboxID   int64   `json:"outboxId,omitempty"`
+	Prefix     string  `json:"prefix,omitempty"`
+	Country    string  `json:"country,omitempty"`
+	MNO        string  `json:"mno,omitempty"`
+	UnitCost   float64 `json:"unitCost,omitempty"`
+	RateSource string  `json:"rateSource,omitempty"`
 }
 
 // Network returns the parsed Network type
@@ -135,6 +145,12 @@ func (m *Message) Clone() *Message {
 		LastError:   m.LastError,
 		ProcessedAt: m.ProcessedAt,
 		SourceQueue: m.SourceQueue,
+		OutboxID:    m.OutboxID,
+		Prefix:      m.Prefix,
+		Country:     m.Country,
+		MNO:         m.MNO,
+		UnitCost:    m.UnitCost,
+		RateSource:  m.RateSource,
 	}
 }
 

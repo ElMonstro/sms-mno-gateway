@@ -513,6 +513,34 @@ func (d *MockDelivery) Nack(requeue bool) error {
 	return nil
 }
 
+// MockResultReporter is a mock implementation of ports.ResultReporter
+type MockResultReporter struct {
+	mu          sync.Mutex
+	ReportFunc  func(ctx context.Context, result *domain.SendResult) error
+	ReportCalls []*domain.SendResult
+}
+
+func NewMockResultReporter() *MockResultReporter {
+	return &MockResultReporter{}
+}
+
+func (r *MockResultReporter) Report(ctx context.Context, result *domain.SendResult) error {
+	r.mu.Lock()
+	r.ReportCalls = append(r.ReportCalls, result)
+	r.mu.Unlock()
+
+	if r.ReportFunc != nil {
+		return r.ReportFunc(ctx, result)
+	}
+	return nil
+}
+
+func (r *MockResultReporter) GetReportCalls() []*domain.SendResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*domain.SendResult(nil), r.ReportCalls...)
+}
+
 // MockRateLimiter is a mock rate limiter for testing
 type MockRateLimiter struct {
 	AllowFunc func(network domain.Network) bool

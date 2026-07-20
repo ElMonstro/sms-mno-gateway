@@ -19,6 +19,8 @@ type Config struct {
 	RateLimit RateLimitConfig
 	Priority  PriorityConfig
 	Retry     RetryConfig
+
+	AfricasTalking AfricasTalkingConfig
 }
 
 // AppConfig holds application-level configuration
@@ -161,6 +163,28 @@ type SMPPConfig struct {
 	Password    string
 	DLRURL      string
 	DLRURLApiV2 string
+}
+
+// AfricasTalkingConfig holds configuration for the AfricasTalking (international) channel.
+// Unlike the other MNO configs, this also carries queue/worker settings and the
+// PHP API callback details, since AfricasTalking gets its own dedicated pipeline
+// (see internal/bootstrap/app.go) rather than flowing through INPUT_QUEUES.
+type AfricasTalkingConfig struct {
+	QueueName   string
+	WorkerCount int
+	Prefetch    int
+
+	SandboxURL    string
+	ProductionURL string
+	Mode          string // "sandbox" or "production"
+	APIKey        string
+	APIKeyProd    string
+	Username      string
+
+	// SendResultURL is the full URL of this API's own PHP backend endpoint
+	// (POST /api/internal/africas-talking/send-result) that results are reported to.
+	SendResultURL string
+	InternalToken string
 }
 
 // RateLimitConfig holds per-network rate limit configuration
@@ -349,6 +373,19 @@ func Load() *Config {
 			BurstFactor:              getEnvAsInt("RATE_LIMIT_RETRY_BURST_FACTOR", 1),
 			MaxRetriesTransactional:  getEnvAsInt("RETRY_MAX_RETRIES_TRANSACTIONAL", 5),
 			MaxRetriesPromotional:    getEnvAsInt("RETRY_MAX_RETRIES_PROMOTIONAL", 10),
+		},
+		AfricasTalking: AfricasTalkingConfig{
+			QueueName:     getEnv("AFRICAS_TALKING_SMS_QUEUE", "AFRICAS_TALKING_SMS_QUEUE"),
+			WorkerCount:   getEnvAsInt("AFRICAS_TALKING_WORKER_COUNT", 5),
+			Prefetch:      getEnvAsInt("AFRICAS_TALKING_PREFETCH", 20),
+			SandboxURL:    getEnv("AFRICAS_TALKING_SANDBOX_API_URL", "https://api.sandbox.africastalking.com/version1/messaging"),
+			ProductionURL: getEnv("AFRICAS_TALKING_PRODUCTION_API_URL", "https://api.africastalking.com/version1/messaging"),
+			Mode:          getEnv("AFRICAS_TALKING_MODE", "sandbox"),
+			APIKey:        getEnv("AFRICAS_TALKING_API_KEY", ""),
+			APIKeyProd:    getEnv("AFRICAS_TALKING_API_KEY_PROD", ""),
+			Username:      getEnv("AFRICAS_TALKING_USERNAME", ""),
+			SendResultURL: getEnv("AFRICAS_TALKING_SEND_RESULT_URL", ""),
+			InternalToken: getEnv("AFRICAS_TALKING_INTERNAL_TOKEN", ""),
 		},
 	}
 }

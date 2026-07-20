@@ -36,6 +36,11 @@ type SendResult struct {
 	MNOResponse string
 	Latency     time.Duration
 	Timestamp   time.Time
+
+	// ExternalMessageID and NetworkCode are populated only by the AfricasTalking
+	// sender, for reporting back to the PHP API via ports.ResultReporter.
+	ExternalMessageID string
+	NetworkCode       string
 }
 
 // NewSuccessResult creates a new successful result
