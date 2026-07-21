@@ -16,6 +16,7 @@ import (
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/metrics"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/ratelimit"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/config"
+	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/adapters/httpapi"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/adapters/mno"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/adapters/rabbitmq"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/adapters/redis"
@@ -48,6 +49,14 @@ type App struct {
 	PromotionalRetryConsumer    *rabbitmq.Consumer
 	TransactionalRetryProcessor *service.Processor
 	PromotionalRetryProcessor   *service.Processor
+
+	// AfricasTalking (international) — dedicated pipeline, isolated from the Kenyan
+	// MNO pipeline above. Results are reported to the PHP API over HTTP instead of
+	// being published to internal RabbitMQ queues. See internal/sms/service/africas_talking_processor.go.
+	AfricasTalkingSender    *mno.AfricasTalkingSender
+	AfricasTalkingReporter  *httpapi.AfricasTalkingReporter
+	AfricasTalkingProcessor *service.AfricasTalkingProcessor
+	AfricasTalkingConsumer  *rabbitmq.Consumer
 
 	// Priority routing components (optional, enabled via PRIORITY_ROUTING_ENABLED)
 	PriorityStore        ports.PriorityStore
@@ -118,6 +127,10 @@ func New(cfg *config.Config) (*App, error) {
 		domain.NetworkTelkom,
 		domain.NetworkEquitel,
 		domain.NetworkCM,
+		// NetworkINTNL is used exclusively by AfricasTalkingSender for its own
+		// circuit breaker — CM's breaker is keyed by domain.NetworkCM, so this
+		// is a separate instance with no collision.
+		domain.NetworkINTNL,
 	}
 	for _, network := range networks {
 		app.BreakerRegistry.Register(network, &circuitbreaker.Config{
@@ -224,6 +237,38 @@ func New(cfg *config.Config) (*App, error) {
 		Logger:          app.Logger,
 	})
 	app.Logger.Info("MNO sender factory initialized with all networks")
+
+	// 9a. Initialize AfricasTalking (international) pipeline — sender, reporter,
+	// processor. Deliberately does not go through MNOFactory/Router: its result
+	// reporting is fundamentally different (HTTP callback vs internal queue publish),
+	// so it gets its own dedicated consumer/processor wired below and in Start().
+	atCB, _ := app.BreakerRegistry.Get(domain.NetworkINTNL)
+	app.AfricasTalkingSender = mno.NewAfricasTalkingSender(&mno.AfricasTalkingConfig{
+		SandboxURL:     cfg.AfricasTalking.SandboxURL,
+		ProductionURL:  cfg.AfricasTalking.ProductionURL,
+		Mode:           cfg.AfricasTalking.Mode,
+		APIKey:         cfg.AfricasTalking.APIKey,
+		APIKeyProd:     cfg.AfricasTalking.APIKeyProd,
+		Username:       cfg.AfricasTalking.Username,
+		HTTPClient:     app.HTTPClient,
+		CircuitBreaker: atCB,
+		Metrics:        app.Metrics,
+		Logger:         app.Logger,
+	})
+	app.AfricasTalkingReporter = httpapi.NewAfricasTalkingReporter(&httpapi.AfricasTalkingReporterConfig{
+		URL:        cfg.AfricasTalking.SendResultURL,
+		Token:      cfg.AfricasTalking.InternalToken,
+		HTTPClient: app.HTTPClient,
+		Logger:     app.Logger,
+	})
+	app.AfricasTalkingProcessor = service.NewAfricasTalkingProcessor(&service.AfricasTalkingProcessorConfig{
+		Sender:      app.AfricasTalkingSender,
+		Reporter:    app.AfricasTalkingReporter,
+		RateLimiter: app.RateLimiter,
+		Metrics:     app.Metrics,
+		Logger:      app.Logger,
+	})
+	app.Logger.Info("AfricasTalking pipeline initialized")
 
 	// 10. Initialize router
 	app.Router = service.NewRouter(app.MNOFactory, app.Logger)
@@ -390,6 +435,21 @@ func New(cfg *config.Config) (*App, error) {
 	})
 	app.Logger.Infof("Promotional retry processor initialized with %d workers", cfg.Retry.PromotionalWorkerCount)
 
+	// 16. Initialize dedicated AfricasTalking consumer — isolated from the main
+	// INPUT_QUEUES loop since it uses AfricasTalkingProcessor, not Processor.
+	app.AfricasTalkingConsumer, err = rabbitmq.NewConsumer(&rabbitmq.ConsumerConfig{
+		Connection:    app.RabbitConn,
+		QueueName:     cfg.AfricasTalking.QueueName,
+		Prefetch:      cfg.AfricasTalking.Prefetch,
+		ReconnectWait: cfg.RabbitMQ.ReconnectWait,
+		Logger:        app.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AfricasTalking consumer: %w", err)
+	}
+	app.Logger.Infof("AfricasTalking consumer initialized (queue: %s, prefetch: %d)",
+		cfg.AfricasTalking.QueueName, cfg.AfricasTalking.Prefetch)
+
 	// 17. Initialize HTTP server
 	app.HTTPServer = api.NewServer(&api.ServerConfig{
 		Port:         cfg.HTTP.Port,
@@ -542,6 +602,26 @@ func (app *App) Start(ctx context.Context) error {
 				}
 				app.Logger.Infof("Retry delivery processor stopped for queue: %s", queueName)
 			}(queueName, deliveries)
+		}
+	}
+
+	// Start the dedicated AfricasTalking consumer with its own worker pool.
+	{
+		deliveries, err := app.AfricasTalkingConsumer.Consume(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start AfricasTalking consumer: %w", err)
+		}
+		workers := app.Config.AfricasTalking.WorkerCount
+		app.Logger.Infof("Starting %d AfricasTalking delivery processors", workers)
+		for i := 0; i < workers; i++ {
+			go func(deliveries <-chan ports.Delivery) {
+				for delivery := range deliveries {
+					if err := app.AfricasTalkingProcessor.ProcessDelivery(ctx, delivery); err != nil {
+						app.Logger.WithError(err).Error("Failed to process AfricasTalking delivery")
+					}
+				}
+				app.Logger.Info("AfricasTalking delivery processor stopped")
+			}(deliveries)
 		}
 	}
 
@@ -824,6 +904,13 @@ func (app *App) Shutdown(ctx context.Context) error {
 			if err := consumer.Close(); err != nil {
 				app.Logger.WithError(err).Warn("Error closing retry consumer")
 			}
+		}
+	}
+
+	// Close AfricasTalking consumer
+	if app.AfricasTalkingConsumer != nil {
+		if err := app.AfricasTalkingConsumer.Close(); err != nil {
+			app.Logger.WithError(err).Warn("Error closing AfricasTalking consumer")
 		}
 	}
 

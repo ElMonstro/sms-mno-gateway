@@ -214,6 +214,21 @@ env:
   - name: COUNTRY_PREFIX
     value: "KEN"
 
+  - name: AFRICAS_TALKING_SMS_QUEUE
+    value: AFRICAS_TALKING_SMS_QUEUE
+  - name: AFRICAS_TALKING_WORKER_COUNT
+    value: "5"
+  - name: AFRICAS_TALKING_PREFETCH
+    value: "20"
+  - name: AFRICAS_TALKING_SANDBOX_API_URL
+    value: https://api.sandbox.africastalking.com/version1/messaging
+  - name: AFRICAS_TALKING_PRODUCTION_API_URL
+    value: https://api.africastalking.com/version1/messaging
+  - name: AFRICAS_TALKING_MODE
+    value: production
+  - name: AFRICAS_TALKING_SEND_RESULT_URL
+    value: https://api.v2.emalify.com/api/internal/africas-talking/send-result
+
 secrets:
   - SDP_USERNAME
   - SDP_PASSWORD
@@ -229,6 +244,10 @@ secrets:
   - EQUITEL_SMPP_PASSWORD
   - CM_SMPP_USERNAME
   - CM_SMPP_PASSWORD
+  - AFRICAS_TALKING_API_KEY
+  - AFRICAS_TALKING_API_KEY_PROD
+  - AFRICAS_TALKING_USERNAME
+  - AFRICAS_TALKING_INTERNAL_TOKEN
 
 requires:
   - rabbitmq
