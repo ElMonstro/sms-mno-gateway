@@ -14,7 +14,7 @@ env:
   - name: APP_ENV
     value: production
   - name: LOG_LEVEL
-    value: debug
+    value: info
   - name: WORKER_COUNT
     value: "150"
 
