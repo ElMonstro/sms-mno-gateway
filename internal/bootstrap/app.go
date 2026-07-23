@@ -244,16 +244,17 @@ func New(cfg *config.Config) (*App, error) {
 	// so it gets its own dedicated consumer/processor wired below and in Start().
 	atCB, _ := app.BreakerRegistry.Get(domain.NetworkINTNL)
 	app.AfricasTalkingSender = mno.NewAfricasTalkingSender(&mno.AfricasTalkingConfig{
-		SandboxURL:     cfg.AfricasTalking.SandboxURL,
-		ProductionURL:  cfg.AfricasTalking.ProductionURL,
-		Mode:           cfg.AfricasTalking.Mode,
-		APIKey:         cfg.AfricasTalking.APIKey,
-		APIKeyProd:     cfg.AfricasTalking.APIKeyProd,
-		Username:       cfg.AfricasTalking.Username,
-		HTTPClient:     app.HTTPClient,
-		CircuitBreaker: atCB,
-		Metrics:        app.Metrics,
-		Logger:         app.Logger,
+		SandboxURL:      cfg.AfricasTalking.SandboxURL,
+		ProductionURL:   cfg.AfricasTalking.ProductionURL,
+		Mode:            cfg.AfricasTalking.Mode,
+		APIKey:          cfg.AfricasTalking.APIKey,
+		APIKeyProd:      cfg.AfricasTalking.APIKeyProd,
+		Username:        cfg.AfricasTalking.Username,
+		HTTPClient:      app.HTTPClient,
+		CircuitBreaker:  atCB,
+		Metrics:         app.Metrics,
+		Logger:          app.Logger,
+		BalanceCooldown: cfg.AfricasTalking.BalanceCooldown,
 	})
 	app.AfricasTalkingReporter = httpapi.NewAfricasTalkingReporter(&httpapi.AfricasTalkingReporterConfig{
 		URL:        cfg.AfricasTalking.SendResultURL,
@@ -262,13 +263,18 @@ func New(cfg *config.Config) (*App, error) {
 		Logger:     app.Logger,
 	})
 	app.AfricasTalkingProcessor = service.NewAfricasTalkingProcessor(&service.AfricasTalkingProcessorConfig{
-		Sender:        app.AfricasTalkingSender,
-		Reporter:      app.AfricasTalkingReporter,
-		RateLimiter:   app.RateLimiter,
-		Metrics:       app.Metrics,
-		Publisher:     app.Publisher,
-		SaveToDBQueue: cfg.Queues.SaveToDBQueue,
-		Logger:        app.Logger,
+		Sender:               app.AfricasTalkingSender,
+		Reporter:             app.AfricasTalkingReporter,
+		RateLimiter:          app.RateLimiter,
+		Metrics:              app.Metrics,
+		Publisher:            app.Publisher,
+		SaveToDBQueue:        cfg.Queues.SaveToDBQueue,
+		QueueName:            cfg.AfricasTalking.QueueName,
+		DeadLetterQueue:      cfg.Queues.DeadLetterQueue,
+		MaxReportRetries:     cfg.AfricasTalking.MaxReportRetries,
+		ReportRetryBaseDelay: cfg.AfricasTalking.ReportRetryBaseDelay,
+		ReportRetryMaxDelay:  cfg.AfricasTalking.ReportRetryMaxDelay,
+		Logger:               app.Logger,
 	})
 	app.Logger.Info("AfricasTalking pipeline initialized")
 

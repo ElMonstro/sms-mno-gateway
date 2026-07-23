@@ -185,6 +185,19 @@ type AfricasTalkingConfig struct {
 	// (POST /api/internal/africas-talking/send-result) that results are reported to.
 	SendResultURL string
 	InternalToken string
+
+	// BalanceCooldown is how long AfricasTalkingSender stops attempting sends
+	// after seeing an InsufficientBalance response from the API.
+	BalanceCooldown time.Duration
+
+	// MaxReportRetries caps how many times AfricasTalkingProcessor will requeue a
+	// message after a failed callback report to the PHP API, before dead-lettering
+	// it. Without a cap, a persistently failing report endpoint retries forever.
+	MaxReportRetries int
+	// ReportRetryBaseDelay/ReportRetryMaxDelay control the exponential backoff
+	// applied between report-retry attempts (base * 2^(attempt-1), capped at max).
+	ReportRetryBaseDelay time.Duration
+	ReportRetryMaxDelay  time.Duration
 }
 
 // RateLimitConfig holds per-network rate limit configuration
@@ -386,6 +399,11 @@ func Load() *Config {
 			Username:      getEnv("AFRICAS_TALKING_USERNAME", ""),
 			SendResultURL: getEnv("AFRICAS_TALKING_SEND_RESULT_URL", ""),
 			InternalToken: getEnv("AFRICAS_TALKING_INTERNAL_TOKEN", ""),
+
+			BalanceCooldown:      getEnvAsDuration("AFRICAS_TALKING_BALANCE_COOLDOWN", 5*time.Minute),
+			MaxReportRetries:     getEnvAsInt("AFRICAS_TALKING_MAX_REPORT_RETRIES", 5),
+			ReportRetryBaseDelay: getEnvAsDuration("AFRICAS_TALKING_REPORT_RETRY_BASE_DELAY", 2*time.Second),
+			ReportRetryMaxDelay:  getEnvAsDuration("AFRICAS_TALKING_REPORT_RETRY_MAX_DELAY", 60*time.Second),
 		},
 	}
 }

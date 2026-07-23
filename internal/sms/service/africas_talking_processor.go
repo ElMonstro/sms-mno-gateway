@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/logger"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/ratelimit"
@@ -17,37 +18,82 @@ import (
 // mirroring how Processor/Publisher.PublishResult handles SDP/SMPP; retryable
 // results are not, since this processor has no delay/retry-queue path of its own.
 // The queue is documented to carry exactly one message per delivery.
+//
+// If the report call or the SAVE_TO_DB publish fails after a message has already
+// been sent via AfricasTalking, handleDownstreamFailure applies a bounded,
+// backed-off retry (republishing a fresh copy with an incremented retry count)
+// rather than requeueing instantly and indefinitely — which would otherwise
+// re-send the same message via the real AfricasTalking API in a tight loop for as
+// long as the downstream step keeps failing.
 type AfricasTalkingProcessor struct {
-	sender        ports.MNOSender
-	reporter      ports.ResultReporter
-	rateLimiter   *ratelimit.Limiter
-	metrics       ports.Metrics
-	publisher     ports.QueuePublisher
-	saveToDBQueue string
-	log           logger.Logger
+	sender          ports.MNOSender
+	reporter        ports.ResultReporter
+	rateLimiter     *ratelimit.Limiter
+	metrics         ports.Metrics
+	publisher       ports.QueuePublisher
+	saveToDBQueue   string
+	queueName       string
+	deadLetterQueue string
+
+	// maxReportRetries/reportRetryBaseDelay/reportRetryMaxDelay bound the retry
+	// loop after a message has already been sent via AfricasTalking but a
+	// downstream step (the PHP callback report, or the SAVE_TO_DB publish)
+	// failed. Without a cap and backoff here, a persistently failing downstream
+	// step requeues — and thus re-sends via the real AfricasTalking API —
+	// indefinitely, with no delay between attempts.
+	maxReportRetries     int
+	reportRetryBaseDelay time.Duration
+	reportRetryMaxDelay  time.Duration
+
+	log logger.Logger
 }
 
 // AfricasTalkingProcessorConfig holds configuration for the processor.
 type AfricasTalkingProcessorConfig struct {
-	Sender        ports.MNOSender
-	Reporter      ports.ResultReporter
-	RateLimiter   *ratelimit.Limiter
-	Metrics       ports.Metrics
-	Publisher     ports.QueuePublisher
-	SaveToDBQueue string
-	Logger        logger.Logger
+	Sender          ports.MNOSender
+	Reporter        ports.ResultReporter
+	RateLimiter     *ratelimit.Limiter
+	Metrics         ports.Metrics
+	Publisher       ports.QueuePublisher
+	SaveToDBQueue   string
+	QueueName       string
+	DeadLetterQueue string
+
+	MaxReportRetries     int
+	ReportRetryBaseDelay time.Duration
+	ReportRetryMaxDelay  time.Duration
+
+	Logger logger.Logger
 }
 
 // NewAfricasTalkingProcessor creates a new AfricasTalking processor.
 func NewAfricasTalkingProcessor(cfg *AfricasTalkingProcessorConfig) *AfricasTalkingProcessor {
+	maxRetries := cfg.MaxReportRetries
+	if maxRetries <= 0 {
+		maxRetries = 5
+	}
+	baseDelay := cfg.ReportRetryBaseDelay
+	if baseDelay <= 0 {
+		baseDelay = 2 * time.Second
+	}
+	maxDelay := cfg.ReportRetryMaxDelay
+	if maxDelay <= 0 {
+		maxDelay = 60 * time.Second
+	}
+
 	return &AfricasTalkingProcessor{
-		sender:        cfg.Sender,
-		reporter:      cfg.Reporter,
-		rateLimiter:   cfg.RateLimiter,
-		metrics:       cfg.Metrics,
-		publisher:     cfg.Publisher,
-		saveToDBQueue: cfg.SaveToDBQueue,
-		log:           cfg.Logger,
+		sender:               cfg.Sender,
+		reporter:             cfg.Reporter,
+		rateLimiter:          cfg.RateLimiter,
+		metrics:              cfg.Metrics,
+		publisher:            cfg.Publisher,
+		saveToDBQueue:        cfg.SaveToDBQueue,
+		queueName:            cfg.QueueName,
+		deadLetterQueue:      cfg.DeadLetterQueue,
+		maxReportRetries:     maxRetries,
+		reportRetryBaseDelay: baseDelay,
+		reportRetryMaxDelay:  maxDelay,
+		log:                  cfg.Logger,
 	}
 }
 
@@ -133,13 +179,7 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 	result := p.sender.Send(ctx, msg)
 
 	if err := p.reporter.Report(ctx, result); err != nil {
-		p.log.WithFields(map[string]interface{}{
-			"correlator": msg.Correlator,
-			"outbox_id":  msg.OutboxID,
-			"send_ok":    result.IsSuccess(),
-			"error":      err.Error(),
-		}).Error("Failed to report AfricasTalking send result, requeueing")
-		return outcomeNackRequeue
+		return p.handleDownstreamFailure(ctx, msg, "report_failed", err)
 	}
 
 	// Save successful and permanently-failed results to SAVE_TO_DB, matching
@@ -148,14 +188,74 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 	// retryable send is already terminal by the time it reaches this point.
 	if p.publisher != nil && (result.IsSuccess() || result.IsPermanent()) {
 		if err := p.publisher.Publish(ctx, p.saveToDBQueue, result.Message); err != nil {
-			p.log.WithFields(map[string]interface{}{
-				"correlator": msg.Correlator,
-				"outbox_id":  msg.OutboxID,
-				"error":      err.Error(),
-			}).Error("Failed to publish AfricasTalking result to SAVE_TO_DB, requeueing")
-			return outcomeNackRequeue
+			return p.handleDownstreamFailure(ctx, msg, "save_to_db_failed", err)
 		}
 	}
 
 	return outcomeAck
+}
+
+// handleDownstreamFailure applies a bounded, backed-off retry after a message has
+// already been sent via AfricasTalking but a downstream step (the PHP callback
+// report, or the SAVE_TO_DB publish) failed. Retry count travels in the message
+// body itself — durable across redeliveries — since a plain Nack(requeue=true)
+// redelivers the original unmodified AMQP body, not any in-memory mutation.
+// Once the cap is exceeded, the message is dead-lettered and dropped rather than
+// retried forever.
+func (p *AfricasTalkingProcessor) handleDownstreamFailure(ctx context.Context, msg *domain.Message, reason string, downstreamErr error) messageOutcome {
+	msg.IncrementRetryCount()
+
+	logFields := map[string]interface{}{
+		"correlator":  msg.Correlator,
+		"outbox_id":   msg.OutboxID,
+		"retry_count": msg.RetryCount,
+		"reason":      reason,
+		"error":       downstreamErr.Error(),
+	}
+
+	if msg.RetryCount > p.maxReportRetries {
+		p.log.WithFields(logFields).Error("AfricasTalking downstream retries exhausted, dropping message")
+		if p.publisher != nil && p.deadLetterQueue != "" {
+			if err := p.publisher.Publish(ctx, p.deadLetterQueue, msg); err != nil {
+				p.log.WithFields(logFields).WithError(err).Error("Failed to publish exhausted AfricasTalking message to DLQ")
+			}
+		}
+		return outcomeNackDrop
+	}
+
+	backoff := p.retryBackoff(msg.RetryCount)
+	p.log.WithFields(logFields).WithField("backoff_ms", backoff.Milliseconds()).
+		Warn("AfricasTalking downstream step failed, backing off before retry")
+
+	select {
+	case <-time.After(backoff):
+	case <-ctx.Done():
+		// Shutting down mid-backoff — let the broker requeue the original delivery
+		// as-is rather than block shutdown further.
+		return outcomeNackRequeue
+	}
+
+	if p.publisher == nil || p.queueName == "" {
+		return outcomeNackRequeue
+	}
+	if err := p.publisher.Publish(ctx, p.queueName, msg); err != nil {
+		p.log.WithFields(logFields).WithError(err).Error("Failed to republish AfricasTalking message for retry, requeueing as-is")
+		return outcomeNackRequeue
+	}
+	// A fresh copy carrying the incremented retry count is now durably enqueued —
+	// the original delivery just needs to be acked, not requeued.
+	return outcomeAck
+}
+
+// retryBackoff computes exponential backoff for the given retry attempt
+// (base * 2^(attempt-1)), capped at reportRetryMaxDelay.
+func (p *AfricasTalkingProcessor) retryBackoff(retryCount int) time.Duration {
+	if retryCount < 1 {
+		retryCount = 1
+	}
+	backoff := p.reportRetryBaseDelay * time.Duration(uint(1)<<uint(retryCount-1))
+	if p.reportRetryMaxDelay > 0 && backoff > p.reportRetryMaxDelay {
+		backoff = p.reportRetryMaxDelay
+	}
+	return backoff
 }

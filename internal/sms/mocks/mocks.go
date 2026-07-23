@@ -194,12 +194,13 @@ func (f *MockMNOSenderFactory) ListSenders() []ports.MNOSender {
 
 // MockQueuePublisher is a mock implementation of ports.QueuePublisher
 type MockQueuePublisher struct {
-	mu               sync.Mutex
-	connected        bool
-	PublishedItems   []*PublishedItem
-	PublishFunc      func(ctx context.Context, result *domain.SendResult) error
-	PublishErr       error
-	GatewayQueueName string
+	mu                sync.Mutex
+	connected         bool
+	PublishedItems    []*PublishedItem
+	PublishFunc       func(ctx context.Context, result *domain.SendResult) error
+	PublishErr        error
+	PublishErrByQueue map[string]error
+	GatewayQueueName  string
 }
 
 type PublishedItem struct {
@@ -219,6 +220,9 @@ func NewMockQueuePublisher() *MockQueuePublisher {
 func (p *MockQueuePublisher) Publish(ctx context.Context, queueName string, msg *domain.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err, ok := p.PublishErrByQueue[queueName]; ok && err != nil {
+		return err
+	}
 	if p.PublishErr != nil {
 		return p.PublishErr
 	}

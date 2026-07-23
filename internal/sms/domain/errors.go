@@ -22,6 +22,12 @@ var (
 	ErrMNOTimeout         = errors.New("MNO request timed out")
 	ErrMNOInvalidResponse = errors.New("invalid response from MNO")
 
+	// ErrInsufficientBalance indicates the AfricasTalking account has no funds to
+	// send with — an account-level condition, not a per-message one. Once seen,
+	// AfricasTalkingSender stops attempting further sends until a cooldown expires
+	// rather than hammering the API with sends it already knows will fail.
+	ErrInsufficientBalance = errors.New("AfricasTalking account has insufficient balance")
+
 	// Rate limiting errors
 	ErrRateLimited = errors.New("rate limit exceeded")
 
