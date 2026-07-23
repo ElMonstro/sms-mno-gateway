@@ -34,13 +34,6 @@ type Message struct {
 	MNO        string        `json:"mno,omitempty"`
 	UnitCost   float64       `json:"unitCost,omitempty"`
 	RateSource string        `json:"rateSource,omitempty"`
-
-	// ExternalMessageID is the AfricasTalking-assigned message ID (e.g. "ATXid_...").
-	// Set from SendResult.ExternalMessageID before publishing to SAVE_TO_DB, so
-	// insert-sent-sms has it available to persist — gateway-dlr-handler's DLR
-	// callback looks up the outbox row by this ID, so it needs to already be
-	// saved before that callback arrives.
-	ExternalMessageID string `json:"messageId,omitempty"`
 }
 
 // FlexibleInt64 unmarshals a JSON number or a quoted numeric string into an int64.
@@ -159,26 +152,25 @@ func (m *Message) CanRetry(maxRetries int) bool {
 // Clone creates a deep copy of the message
 func (m *Message) Clone() *Message {
 	return &Message{
-		Correlator:        m.Correlator,
-		Content:           m.Content,
-		MSISDN:            m.MSISDN,
-		NetworkRaw:        m.NetworkRaw,
-		Sender:            m.Sender,
-		PackageID:         m.PackageID,
-		Status:            m.Status,
-		Description:       m.Description,
-		CreatedAt:         m.CreatedAt,
-		RetryCount:        m.RetryCount,
-		LastError:         m.LastError,
-		ProcessedAt:       m.ProcessedAt,
-		SourceQueue:       m.SourceQueue,
-		OutboxID:          m.OutboxID,
-		Prefix:            m.Prefix,
-		Country:           m.Country,
-		MNO:               m.MNO,
-		UnitCost:          m.UnitCost,
-		RateSource:        m.RateSource,
-		ExternalMessageID: m.ExternalMessageID,
+		Correlator:  m.Correlator,
+		Content:     m.Content,
+		MSISDN:      m.MSISDN,
+		NetworkRaw:  m.NetworkRaw,
+		Sender:      m.Sender,
+		PackageID:   m.PackageID,
+		Status:      m.Status,
+		Description: m.Description,
+		CreatedAt:   m.CreatedAt,
+		RetryCount:  m.RetryCount,
+		LastError:   m.LastError,
+		ProcessedAt: m.ProcessedAt,
+		SourceQueue: m.SourceQueue,
+		OutboxID:    m.OutboxID,
+		Prefix:      m.Prefix,
+		Country:     m.Country,
+		MNO:         m.MNO,
+		UnitCost:    m.UnitCost,
+		RateSource:  m.RateSource,
 	}
 }
 

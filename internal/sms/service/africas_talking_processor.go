@@ -176,12 +176,6 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 
 	result := p.sender.Send(ctx, msg)
 
-	// Carry the AT-assigned message ID through so SAVE_TO_DB / insert-sent-sms has
-	// it available before the report call reaches gateway-dlr-handler — its DLR
-	// callback looks up the outbox row by this ID, so publishing it first avoids
-	// a race where that lookup runs before the ID has ever been saved anywhere.
-	msg.ExternalMessageID = result.ExternalMessageID
-
 	// From this point on, Send is never called again for this message — only the
 	// downstream steps below may be retried, and only in-process.
 
@@ -189,7 +183,8 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 	// Publisher.PublishResult's behavior for SDP/SMPP. Retryable results aren't
 	// saved here — this processor has no delay/retry-queue path of its own, so a
 	// retryable send is already terminal by the time it reaches this point.
-	// Deliberately done before the report call below — see the comment above.
+	// Deliberately done before the report call below, so our own record is
+	// persisted before we tell gateway-dlr-handler about the outcome.
 	if p.publisher != nil && (result.IsSuccess() || result.IsPermanent()) {
 		if err := p.retryInProcess(ctx, msg, "save_to_db_failed", func() error {
 			return p.publisher.Publish(ctx, p.saveToDBQueue, result.Message)

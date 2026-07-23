@@ -288,33 +288,6 @@ func TestAfricasTalkingProcessor_Success_PublishesToSaveToDB(t *testing.T) {
 	}
 }
 
-func TestAfricasTalkingProcessor_Success_CarriesExternalMessageIDToSaveToDB(t *testing.T) {
-	sender := mocks.NewMockMNOSender("AfricasTalking", domain.NetworkINTNL)
-	sender.SendFunc = func(ctx context.Context, msg *domain.Message) *domain.SendResult {
-		result := domain.NewSuccessResult(msg, "mock-response", 0)
-		result.ExternalMessageID = "ATXid_test123"
-		return result
-	}
-	reporter := mocks.NewMockResultReporter()
-	publisher := mocks.NewMockQueuePublisher()
-	p := newTestAfricasTalkingProcessorWithPublisher(sender, reporter, publisher)
-
-	delivery := mocks.NewMockDeliveryWithMessages([]*domain.Message{validATMessage()})
-
-	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	items := publisher.GetPublishedItems()
-	if len(items) != 1 {
-		t.Fatalf("expected 1 published item, got %d", len(items))
-	}
-	// SAVE_TO_DB / insert-sent-sms needs the AT message ID available before the
-	// report call reaches gateway-dlr-handler, which looks up the outbox row by it.
-	if items[0].Message.ExternalMessageID != "ATXid_test123" {
-		t.Errorf("published ExternalMessageID = %q, want ATXid_test123", items[0].Message.ExternalMessageID)
-	}
-}
-
 func TestAfricasTalkingProcessor_SaveToDBPublishedBeforeReportCall(t *testing.T) {
 	sender := mocks.NewMockMNOSender("AfricasTalking", domain.NetworkINTNL)
 	reporter := mocks.NewMockResultReporter()
