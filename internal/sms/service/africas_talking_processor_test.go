@@ -180,12 +180,18 @@ func TestAfricasTalkingProcessor_ReportAlwaysFails_ExhaustsRetries_DeadLettersAn
 		t.Errorf("expected 3 report attempts (1 initial + 2 retries), got %d", got)
 	}
 
+	// SAVE_TO_DB is published before the report call (see processMessage), so it
+	// still succeeds even though the report keeps failing — the record just also
+	// ends up dead-lettered once report retries are exhausted.
 	items := publisher.GetPublishedItems()
-	if len(items) != 1 {
-		t.Fatalf("expected 1 dead-lettered item, got %d", len(items))
+	if len(items) != 2 {
+		t.Fatalf("expected 2 published items (SAVE_TO_DB, then dead-letter), got %d", len(items))
 	}
-	if items[0].QueueName != "SMS_DEAD_LETTER_QUEUE" {
-		t.Errorf("QueueName = %v, want SMS_DEAD_LETTER_QUEUE", items[0].QueueName)
+	if items[0].QueueName != "SAVE_TO_DB" {
+		t.Errorf("items[0].QueueName = %v, want SAVE_TO_DB", items[0].QueueName)
+	}
+	if items[1].QueueName != "SMS_DEAD_LETTER_QUEUE" {
+		t.Errorf("items[1].QueueName = %v, want SMS_DEAD_LETTER_QUEUE", items[1].QueueName)
 	}
 }
 
@@ -279,6 +285,61 @@ func TestAfricasTalkingProcessor_Success_PublishesToSaveToDB(t *testing.T) {
 	}
 	if items[0].QueueName != "SAVE_TO_DB" {
 		t.Errorf("QueueName = %v, want SAVE_TO_DB", items[0].QueueName)
+	}
+}
+
+func TestAfricasTalkingProcessor_Success_CarriesExternalMessageIDToSaveToDB(t *testing.T) {
+	sender := mocks.NewMockMNOSender("AfricasTalking", domain.NetworkINTNL)
+	sender.SendFunc = func(ctx context.Context, msg *domain.Message) *domain.SendResult {
+		result := domain.NewSuccessResult(msg, "mock-response", 0)
+		result.ExternalMessageID = "ATXid_test123"
+		return result
+	}
+	reporter := mocks.NewMockResultReporter()
+	publisher := mocks.NewMockQueuePublisher()
+	p := newTestAfricasTalkingProcessorWithPublisher(sender, reporter, publisher)
+
+	delivery := mocks.NewMockDeliveryWithMessages([]*domain.Message{validATMessage()})
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	items := publisher.GetPublishedItems()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 published item, got %d", len(items))
+	}
+	// SAVE_TO_DB / insert-sent-sms needs the AT message ID available before the
+	// report call reaches gateway-dlr-handler, which looks up the outbox row by it.
+	if items[0].Message.ExternalMessageID != "ATXid_test123" {
+		t.Errorf("published ExternalMessageID = %q, want ATXid_test123", items[0].Message.ExternalMessageID)
+	}
+}
+
+func TestAfricasTalkingProcessor_SaveToDBPublishedBeforeReportCall(t *testing.T) {
+	sender := mocks.NewMockMNOSender("AfricasTalking", domain.NetworkINTNL)
+	reporter := mocks.NewMockResultReporter()
+	publisher := mocks.NewMockQueuePublisher()
+
+	var order []string
+	reporter.ReportFunc = func(ctx context.Context, result *domain.SendResult) error {
+		order = append(order, "report")
+		return nil
+	}
+	publisher.PublishHook = func(ctx context.Context, queueName string, msg *domain.Message) error {
+		order = append(order, "publish:"+queueName)
+		return nil
+	}
+	p := newTestAfricasTalkingProcessorWithPublisher(sender, reporter, publisher)
+
+	delivery := mocks.NewMockDeliveryWithMessages([]*domain.Message{validATMessage()})
+
+	if err := p.ProcessDelivery(context.Background(), delivery); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	want := []string{"publish:SAVE_TO_DB", "report"}
+	if len(order) != len(want) || order[0] != want[0] || order[1] != want[1] {
+		t.Errorf("call order = %v, want %v (SAVE_TO_DB must be published before the report call reaches gateway-dlr-handler)", order, want)
 	}
 }
 
