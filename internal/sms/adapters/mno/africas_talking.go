@@ -149,6 +149,12 @@ func (s *AfricasTalkingSender) executeSend(ctx context.Context, msg *domain.Mess
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("apiKey", apiKey)
 
+	s.log.WithFields(map[string]interface{}{
+		"correlator": msg.Correlator,
+		"msisdn":     to,
+		"url":        sendURL,
+	}).Info("Sending message via AfricasTalking")
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		elapsed := time.Since(start)

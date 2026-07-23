@@ -92,7 +92,7 @@ func (r *AfricasTalkingReporter) Report(ctx context.Context, result *domain.Send
 		"correlator": result.Message.Correlator,
 		"outbox_id":  result.Message.OutboxID,
 		"success":    success,
-	}).Debug("Reporting AfricasTalking send result")
+	}).Info("Reporting AfricasTalking send result to API v2")
 
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
@@ -114,6 +114,11 @@ func (r *AfricasTalkingReporter) Report(ctx context.Context, result *domain.Send
 		}).Error("AfricasTalking send-result callback rejected")
 		return fmt.Errorf("send-result callback returned status %d", resp.StatusCode)
 	}
+
+	r.log.WithFields(map[string]interface{}{
+		"correlator": result.Message.Correlator,
+		"outbox_id":  result.Message.OutboxID,
+	}).Info("AfricasTalking send result reported to API v2 successfully")
 
 	return nil
 }
