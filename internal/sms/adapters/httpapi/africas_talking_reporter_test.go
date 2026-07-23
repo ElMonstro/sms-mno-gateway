@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +59,44 @@ func TestAfricasTalkingReporter_Report_Success(t *testing.T) {
 	}
 	if gotPayload.MessageID != "ATXid_1" {
 		t.Errorf("expected messageId ATXid_1, got %q", gotPayload.MessageID)
+	}
+}
+
+// TestAfricasTalkingReporter_Report_SerializesMessageIDAsID guards against a
+// regression to the "messageId" key: gateway-dlr-handler's /save/international
+// endpoint requires the field to be named "id" (matching AfricasTalking's own
+// native DLR webhook), and silently rejects every callback with "missing id"
+// if it isn't — decoding into the same struct on both ends of a test wouldn't
+// catch that, so this asserts on the raw wire body instead.
+func TestAfricasTalkingReporter_Report_SerializesMessageIDAsID(t *testing.T) {
+	var rawBody string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read raw body: %v", err)
+		}
+		rawBody = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	reporter := newTestReporter(t, server.URL, "shared-secret")
+
+	msg := &domain.Message{Correlator: "123", OutboxID: 456}
+	result := domain.NewSuccessResult(msg, "ok", time.Millisecond)
+	result.ExternalMessageID = "ATXid_1"
+	result.NetworkCode = "101"
+
+	if err := reporter.Report(context.Background(), result); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if !strings.Contains(rawBody, `"id":"ATXid_1"`) {
+		t.Errorf("expected raw payload to contain \"id\":\"ATXid_1\", got %s", rawBody)
+	}
+	if strings.Contains(rawBody, "messageId") {
+		t.Errorf("expected raw payload not to contain the old \"messageId\" key, got %s", rawBody)
 	}
 }
 

@@ -19,12 +19,14 @@ import (
 // results are not, since this processor has no delay/retry-queue path of its own.
 // The queue is documented to carry exactly one message per delivery.
 //
-// If the report call or the SAVE_TO_DB publish fails after a message has already
-// been sent via AfricasTalking, handleDownstreamFailure applies a bounded,
-// backed-off retry (republishing a fresh copy with an incremented retry count)
-// rather than requeueing instantly and indefinitely — which would otherwise
-// re-send the same message via the real AfricasTalking API in a tight loop for as
-// long as the downstream step keeps failing.
+// Once sender.Send has produced a result, it is never called again for that
+// message. If the report call or the SAVE_TO_DB publish fails afterward,
+// retryInProcess retries only that failed step, in-process with exponential
+// backoff, up to maxReportRetries attempts. Retrying via the queue instead
+// (Nack + redelivery) would restart processMessage from the top and re-invoke
+// Send — genuinely re-sending the SMS via the real AfricasTalking API for every
+// downstream retry, which is what caused a production incident: a message whose
+// send succeeded but whose report kept failing was re-sent dozens of times.
 type AfricasTalkingProcessor struct {
 	sender          ports.MNOSender
 	reporter        ports.ResultReporter
@@ -32,15 +34,13 @@ type AfricasTalkingProcessor struct {
 	metrics         ports.Metrics
 	publisher       ports.QueuePublisher
 	saveToDBQueue   string
-	queueName       string
 	deadLetterQueue string
 
-	// maxReportRetries/reportRetryBaseDelay/reportRetryMaxDelay bound the retry
-	// loop after a message has already been sent via AfricasTalking but a
-	// downstream step (the PHP callback report, or the SAVE_TO_DB publish)
-	// failed. Without a cap and backoff here, a persistently failing downstream
-	// step requeues — and thus re-sends via the real AfricasTalking API —
-	// indefinitely, with no delay between attempts.
+	// maxReportRetries/reportRetryBaseDelay/reportRetryMaxDelay bound the
+	// in-process retry of a downstream step (the PHP callback report, or the
+	// SAVE_TO_DB publish) after a message has already been sent via
+	// AfricasTalking. Without a cap and backoff here, a persistently failing
+	// downstream step would retry indefinitely with no delay between attempts.
 	maxReportRetries     int
 	reportRetryBaseDelay time.Duration
 	reportRetryMaxDelay  time.Duration
@@ -56,7 +56,6 @@ type AfricasTalkingProcessorConfig struct {
 	Metrics         ports.Metrics
 	Publisher       ports.QueuePublisher
 	SaveToDBQueue   string
-	QueueName       string
 	DeadLetterQueue string
 
 	MaxReportRetries     int
@@ -88,7 +87,6 @@ func NewAfricasTalkingProcessor(cfg *AfricasTalkingProcessorConfig) *AfricasTalk
 		metrics:              cfg.Metrics,
 		publisher:            cfg.Publisher,
 		saveToDBQueue:        cfg.SaveToDBQueue,
-		queueName:            cfg.QueueName,
 		deadLetterQueue:      cfg.DeadLetterQueue,
 		maxReportRetries:     maxRetries,
 		reportRetryBaseDelay: baseDelay,
@@ -178,8 +176,12 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 
 	result := p.sender.Send(ctx, msg)
 
-	if err := p.reporter.Report(ctx, result); err != nil {
-		return p.handleDownstreamFailure(ctx, msg, "report_failed", err)
+	// From this point on, Send is never called again for this message — only the
+	// downstream steps below may be retried, and only in-process.
+	if err := p.retryInProcess(ctx, msg, "report_failed", func() error {
+		return p.reporter.Report(ctx, result)
+	}); err != nil {
+		return p.finalizeExhausted(ctx, msg, "report_failed", err)
 	}
 
 	// Save successful and permanently-failed results to SAVE_TO_DB, matching
@@ -187,73 +189,88 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 	// saved here — this processor has no delay/retry-queue path of its own, so a
 	// retryable send is already terminal by the time it reaches this point.
 	if p.publisher != nil && (result.IsSuccess() || result.IsPermanent()) {
-		if err := p.publisher.Publish(ctx, p.saveToDBQueue, result.Message); err != nil {
-			return p.handleDownstreamFailure(ctx, msg, "save_to_db_failed", err)
+		if err := p.retryInProcess(ctx, msg, "save_to_db_failed", func() error {
+			return p.publisher.Publish(ctx, p.saveToDBQueue, result.Message)
+		}); err != nil {
+			return p.finalizeExhausted(ctx, msg, "save_to_db_failed", err)
 		}
 	}
 
 	return outcomeAck
 }
 
-// handleDownstreamFailure applies a bounded, backed-off retry after a message has
-// already been sent via AfricasTalking but a downstream step (the PHP callback
-// report, or the SAVE_TO_DB publish) failed. Retry count travels in the message
-// body itself — durable across redeliveries — since a plain Nack(requeue=true)
-// redelivers the original unmodified AMQP body, not any in-memory mutation.
-// Once the cap is exceeded, the message is dead-lettered and dropped rather than
-// retried forever.
-func (p *AfricasTalkingProcessor) handleDownstreamFailure(ctx context.Context, msg *domain.Message, reason string, downstreamErr error) messageOutcome {
-	msg.IncrementRetryCount()
-
-	logFields := map[string]interface{}{
-		"correlator":  msg.Correlator,
-		"outbox_id":   msg.OutboxID,
-		"retry_count": msg.RetryCount,
-		"reason":      reason,
-		"error":       downstreamErr.Error(),
-	}
-
-	if msg.RetryCount > p.maxReportRetries {
-		p.log.WithFields(logFields).Error("AfricasTalking downstream retries exhausted, dropping message")
-		if p.publisher != nil && p.deadLetterQueue != "" {
-			if err := p.publisher.Publish(ctx, p.deadLetterQueue, msg); err != nil {
-				p.log.WithFields(logFields).WithError(err).Error("Failed to publish exhausted AfricasTalking message to DLQ")
-			}
+// retryInProcess retries fn — a downstream step that runs after AfricasTalking
+// has already accepted or rejected the send — with exponential backoff, up to
+// maxReportRetries additional attempts beyond the first. It never touches
+// sender.Send; retrying via the queue instead would restart processMessage from
+// the top and re-send the message via the real AfricasTalking API for every
+// downstream retry. Returns nil on success, or the last error once attempts are
+// exhausted (including ctx.Err() if ctx is cancelled mid-backoff).
+func (p *AfricasTalkingProcessor) retryInProcess(ctx context.Context, msg *domain.Message, step string, fn func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
 		}
-		return outcomeNackDrop
-	}
 
-	backoff := p.retryBackoff(msg.RetryCount)
-	p.log.WithFields(logFields).WithField("backoff_ms", backoff.Milliseconds()).
-		Warn("AfricasTalking downstream step failed, backing off before retry")
+		logFields := map[string]interface{}{
+			"correlator": msg.Correlator,
+			"outbox_id":  msg.OutboxID,
+			"step":       step,
+			"attempt":    attempt,
+			"error":      err.Error(),
+		}
 
-	select {
-	case <-time.After(backoff):
-	case <-ctx.Done():
-		// Shutting down mid-backoff — let the broker requeue the original delivery
-		// as-is rather than block shutdown further.
-		return outcomeNackRequeue
-	}
+		if attempt > p.maxReportRetries {
+			return err
+		}
 
-	if p.publisher == nil || p.queueName == "" {
-		return outcomeNackRequeue
+		backoff := p.retryBackoff(attempt)
+		p.log.WithFields(logFields).WithField("backoff_ms", backoff.Milliseconds()).
+			Warn("AfricasTalking downstream step failed, backing off before retry")
+
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	if err := p.publisher.Publish(ctx, p.queueName, msg); err != nil {
-		p.log.WithFields(logFields).WithError(err).Error("Failed to republish AfricasTalking message for retry, requeueing as-is")
-		return outcomeNackRequeue
-	}
-	// A fresh copy carrying the incremented retry count is now durably enqueued —
-	// the original delivery just needs to be acked, not requeued.
-	return outcomeAck
 }
 
-// retryBackoff computes exponential backoff for the given retry attempt
+// finalizeExhausted handles a downstream step that never succeeded after all
+// in-process retries. On ctx cancellation (shutdown mid-backoff) it lets the
+// broker requeue the original delivery as-is rather than block shutdown
+// further — accepting the same small risk of a duplicate real send already
+// present elsewhere in this codebase for shutdown-time drains, rather than the
+// certainty of one on every persistent-failure retry. Otherwise the message is
+// dead-lettered and dropped instead of retried forever.
+func (p *AfricasTalkingProcessor) finalizeExhausted(ctx context.Context, msg *domain.Message, reason string, err error) messageOutcome {
+	if ctx.Err() != nil {
+		return outcomeNackRequeue
+	}
+
+	p.log.WithFields(map[string]interface{}{
+		"correlator": msg.Correlator,
+		"outbox_id":  msg.OutboxID,
+		"reason":     reason,
+		"error":      err.Error(),
+	}).Error("AfricasTalking downstream retries exhausted, dropping message")
+
+	if p.publisher != nil && p.deadLetterQueue != "" {
+		if dlqErr := p.publisher.Publish(ctx, p.deadLetterQueue, msg); dlqErr != nil {
+			p.log.WithError(dlqErr).Error("Failed to publish exhausted AfricasTalking message to DLQ")
+		}
+	}
+	return outcomeNackDrop
+}
+
+// retryBackoff computes exponential backoff for the given attempt
 // (base * 2^(attempt-1)), capped at reportRetryMaxDelay.
-func (p *AfricasTalkingProcessor) retryBackoff(retryCount int) time.Duration {
-	if retryCount < 1 {
-		retryCount = 1
+func (p *AfricasTalkingProcessor) retryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
 	}
-	backoff := p.reportRetryBaseDelay * time.Duration(uint(1)<<uint(retryCount-1))
+	backoff := p.reportRetryBaseDelay * time.Duration(uint(1)<<uint(attempt-1))
 	if p.reportRetryMaxDelay > 0 && backoff > p.reportRetryMaxDelay {
 		backoff = p.reportRetryMaxDelay
 	}

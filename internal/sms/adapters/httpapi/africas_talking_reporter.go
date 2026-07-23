@@ -45,10 +45,14 @@ func NewAfricasTalkingReporter(cfg *AfricasTalkingReporterConfig) *AfricasTalkin
 }
 
 // sendResultPayload is the request body for the send-result callback.
+// MessageID is serialized as "id" — gateway-dlr-handler's /save/international
+// endpoint expects that key name (matching AfricasTalking's own native DLR
+// webhook convention), not "messageId"; a mismatch here fails 100% of callbacks
+// with "missing id", regardless of retries.
 type sendResultPayload struct {
 	OutboxID    int64  `json:"outboxId"`
 	Success     bool   `json:"success"`
-	MessageID   string `json:"messageId,omitempty"`
+	MessageID   string `json:"id,omitempty"`
 	Status      string `json:"status,omitempty"`
 	NetworkCode string `json:"networkCode,omitempty"`
 }

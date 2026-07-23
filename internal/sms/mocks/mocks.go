@@ -200,7 +200,12 @@ type MockQueuePublisher struct {
 	PublishFunc       func(ctx context.Context, result *domain.SendResult) error
 	PublishErr        error
 	PublishErrByQueue map[string]error
-	GatewayQueueName  string
+	// PublishHook, if set, is called for every Publish and its error (if any) is
+	// returned instead of PublishErr/PublishErrByQueue — giving tests full control,
+	// e.g. failing a specific number of calls before succeeding. On a nil return,
+	// the call is still recorded in PublishedItems as usual.
+	PublishHook      func(ctx context.Context, queueName string, msg *domain.Message) error
+	GatewayQueueName string
 }
 
 type PublishedItem struct {
@@ -220,10 +225,13 @@ func NewMockQueuePublisher() *MockQueuePublisher {
 func (p *MockQueuePublisher) Publish(ctx context.Context, queueName string, msg *domain.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err, ok := p.PublishErrByQueue[queueName]; ok && err != nil {
+	if p.PublishHook != nil {
+		if err := p.PublishHook(ctx, queueName, msg); err != nil {
+			return err
+		}
+	} else if err, ok := p.PublishErrByQueue[queueName]; ok && err != nil {
 		return err
-	}
-	if p.PublishErr != nil {
+	} else if p.PublishErr != nil {
 		return p.PublishErr
 	}
 	p.PublishedItems = append(p.PublishedItems, &PublishedItem{

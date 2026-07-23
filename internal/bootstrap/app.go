@@ -269,7 +269,6 @@ func New(cfg *config.Config) (*App, error) {
 		Metrics:              app.Metrics,
 		Publisher:            app.Publisher,
 		SaveToDBQueue:        cfg.Queues.SaveToDBQueue,
-		QueueName:            cfg.AfricasTalking.QueueName,
 		DeadLetterQueue:      cfg.Queues.DeadLetterQueue,
 		MaxReportRetries:     cfg.AfricasTalking.MaxReportRetries,
 		ReportRetryBaseDelay: cfg.AfricasTalking.ReportRetryBaseDelay,
