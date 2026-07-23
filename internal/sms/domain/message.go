@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,12 +28,31 @@ type Message struct {
 	// The fields below are populated only for AfricasTalking (international) messages
 	// consumed from AFRICAS_TALKING_SMS_QUEUE. They are informational/pass-through for
 	// every other network.
-	OutboxID   int64   `json:"outboxId,omitempty"`
-	Prefix     string  `json:"prefix,omitempty"`
-	Country    string  `json:"country,omitempty"`
-	MNO        string  `json:"mno,omitempty"`
-	UnitCost   float64 `json:"unitCost,omitempty"`
-	RateSource string  `json:"rateSource,omitempty"`
+	OutboxID   FlexibleInt64 `json:"outboxId,omitempty"`
+	Prefix     string        `json:"prefix,omitempty"`
+	Country    string        `json:"country,omitempty"`
+	MNO        string        `json:"mno,omitempty"`
+	UnitCost   float64       `json:"unitCost,omitempty"`
+	RateSource string        `json:"rateSource,omitempty"`
+}
+
+// FlexibleInt64 unmarshals a JSON number or a quoted numeric string into an int64.
+// The AfricasTalking (PHP) publisher sends outboxId as a quoted string, unlike every
+// other numeric field in this struct, which arrives as a native JSON number.
+type FlexibleInt64 int64
+
+func (f *FlexibleInt64) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	*f = FlexibleInt64(v)
+	return nil
 }
 
 // Network returns the parsed Network type

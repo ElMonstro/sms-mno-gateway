@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -421,5 +422,39 @@ func TestMessage_SetStatus(t *testing.T) {
 	}
 	if msg.ProcessedAt.IsZero() {
 		t.Error("ProcessedAt should be set")
+	}
+}
+
+// TestMessage_UnmarshalOutboxIDAsString reproduces AFRICAS_TALKING_SMS_QUEUE payloads
+// as actually published by the PHP API, where outboxId arrives as a quoted string
+// rather than a JSON number. Before FlexibleInt64, this failed the array-unmarshal
+// attempt in Consumer.parseMessages and every AfricasTalking message was silently
+// dropped (Nacked without requeue).
+func TestMessage_UnmarshalOutboxIDAsString(t *testing.T) {
+	body := []byte(`[{"corelator":"358519536","outboxId":"358519536","message":"Test message","msisdn":"260761567057","network":"Intnl","sender":"Betika","packageId":"transactional","prefix":"260","country":"Zambia","mno":null,"unitCost":null,"rateSource":"default"}]`)
+
+	var messages []*Message
+	if err := json.Unmarshal(body, &messages); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	if messages[0].OutboxID != 358519536 {
+		t.Errorf("OutboxID = %v, want 358519536", messages[0].OutboxID)
+	}
+}
+
+// TestMessage_UnmarshalOutboxIDAsNumber ensures the native JSON number form (used by
+// any future publisher) keeps working alongside the quoted-string form.
+func TestMessage_UnmarshalOutboxIDAsNumber(t *testing.T) {
+	body := []byte(`{"outboxId":358519536}`)
+
+	var msg Message
+	if err := json.Unmarshal(body, &msg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if msg.OutboxID != 358519536 {
+		t.Errorf("OutboxID = %v, want 358519536", msg.OutboxID)
 	}
 }
