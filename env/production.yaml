@@ -228,6 +228,14 @@ env:
     value: production
   - name: AFRICAS_TALKING_SEND_RESULT_URL
     value: https://gateway-dlr-handler.emalify.com/save/international
+  - name: AFRICAS_TALKING_BALANCE_COOLDOWN
+    value: 5m
+  - name: AFRICAS_TALKING_MAX_REPORT_RETRIES
+    value: "5"
+  - name: AFRICAS_TALKING_REPORT_RETRY_BASE_DELAY
+    value: 2s
+  - name: AFRICAS_TALKING_REPORT_RETRY_MAX_DELAY
+    value: 60s
 
 secrets:
   - SDP_USERNAME

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emalify/emalify-sms-mno-gateway/internal/common/circuitbreaker"
@@ -16,6 +17,50 @@ import (
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/domain"
 	"github.com/emalify/emalify-sms-mno-gateway/internal/sms/ports"
 )
+
+// AfricasTalking SMS status codes returned in Recipients[].statusCode.
+// Reference: https://help.africastalking.com/en/articles/742491-why-did-my-messages-fail
+const (
+	atStatusProcessed = 100 // success
+	atStatusSent      = 101 // success
+	atStatusQueued    = 102 // success — accepted, queued at carrier
+
+	atStatusRiskHold              = 401 // permanent — account flagged for risk review
+	atStatusInvalidSenderID       = 402 // permanent — sender ID not registered/mapped
+	atStatusInvalidPhoneNumber    = 403 // permanent — malformed number
+	atStatusUnsupportedNumberType = 404 // permanent — number type not supported
+	atStatusInsufficientBalance   = 405 // account-level, not per-message — see tripBalanceCooldown
+	atStatusUserInBlacklist       = 406 // permanent
+	atStatusCouldNotRoute         = 407 // permanent — no route to destination
+
+	atStatusInternalServerError = 500 // transient — AT-side error, worth a later retry
+	atStatusGatewayError        = 501 // transient — AT-side error
+
+	// atStatusRejectedByGateway sits in the 5xx range but AT's own docs describe it
+	// specifically as "senderId/shortcode not mapped to your account" — a permanent
+	// config issue, not a transient gateway error.
+	atStatusRejectedByGateway = 502
+)
+
+// classifyATRejection maps a non-success AfricasTalking Recipients[].statusCode to a
+// ResultType. Only 500/501 are genuinely transient AT-side errors worth a later
+// retry — every other documented code is permanent for this specific message (even
+// InsufficientBalance, which is account-level: tripBalanceCooldown handles backing
+// the whole sender off separately, but this attempt itself is still done).
+func classifyATRejection(statusCode int) domain.ResultType {
+	switch statusCode {
+	case atStatusInternalServerError, atStatusGatewayError:
+		return domain.ResultRetryable
+	case atStatusRiskHold, atStatusInvalidSenderID, atStatusInvalidPhoneNumber,
+		atStatusUnsupportedNumberType, atStatusInsufficientBalance,
+		atStatusUserInBlacklist, atStatusCouldNotRoute, atStatusRejectedByGateway:
+		return domain.ResultPermanent
+	default:
+		// Unknown/undocumented code — treat conservatively as permanent rather than
+		// risk an unbounded retry loop over a code we don't understand.
+		return domain.ResultPermanent
+	}
+}
 
 // AfricasTalkingSender sends international SMS via the AfricasTalking REST API.
 // Unlike the Kenyan MNO adapters, its result is not published to internal RabbitMQ
@@ -32,6 +77,13 @@ type AfricasTalkingSender struct {
 	circuitBreaker *circuitbreaker.CircuitBreaker
 	metrics        ports.Metrics
 	log            logger.Logger
+
+	// balanceCooldown gates sends after an InsufficientBalance response — an
+	// account-level condition where retrying immediately (or per-message) never
+	// helps. See tripBalanceCooldown.
+	balanceCooldown      time.Duration
+	mu                   sync.Mutex
+	balanceDepletedUntil time.Time
 }
 
 // AfricasTalkingConfig holds configuration for the AfricasTalking sender.
@@ -46,22 +98,54 @@ type AfricasTalkingConfig struct {
 	CircuitBreaker *circuitbreaker.CircuitBreaker
 	Metrics        ports.Metrics
 	Logger         logger.Logger
+
+	// BalanceCooldown is how long the sender stops attempting sends after seeing
+	// InsufficientBalance. Defaults to 5 minutes if unset.
+	BalanceCooldown time.Duration
 }
 
 // NewAfricasTalkingSender creates a new AfricasTalking sender.
 func NewAfricasTalkingSender(cfg *AfricasTalkingConfig) *AfricasTalkingSender {
-	return &AfricasTalkingSender{
-		sandboxURL:     cfg.SandboxURL,
-		productionURL:  cfg.ProductionURL,
-		mode:           cfg.Mode,
-		apiKey:         cfg.APIKey,
-		apiKeyProd:     cfg.APIKeyProd,
-		username:       cfg.Username,
-		httpClient:     cfg.HTTPClient,
-		circuitBreaker: cfg.CircuitBreaker,
-		metrics:        cfg.Metrics,
-		log:            cfg.Logger,
+	cooldown := cfg.BalanceCooldown
+	if cooldown <= 0 {
+		cooldown = 5 * time.Minute
 	}
+	return &AfricasTalkingSender{
+		sandboxURL:      cfg.SandboxURL,
+		productionURL:   cfg.ProductionURL,
+		mode:            cfg.Mode,
+		apiKey:          cfg.APIKey,
+		apiKeyProd:      cfg.APIKeyProd,
+		username:        cfg.Username,
+		httpClient:      cfg.HTTPClient,
+		circuitBreaker:  cfg.CircuitBreaker,
+		metrics:         cfg.Metrics,
+		log:             cfg.Logger,
+		balanceCooldown: cooldown,
+	}
+}
+
+// balanceCooldownRemaining returns how long is left on the balance-depleted
+// cooldown, or zero if it isn't active.
+func (s *AfricasTalkingSender) balanceCooldownRemaining() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.balanceDepletedUntil.IsZero() {
+		return 0
+	}
+	if remaining := time.Until(s.balanceDepletedUntil); remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+// tripBalanceCooldown stops further sends for balanceCooldown. Called after
+// AfricasTalking reports InsufficientBalance, so the sender stops making calls it
+// already knows will fail until the account is expected to have been topped up.
+func (s *AfricasTalkingSender) tripBalanceCooldown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.balanceDepletedUntil = time.Now().Add(s.balanceCooldown)
 }
 
 // atRecipient is a single recipient entry in the AfricasTalking send response.
@@ -92,6 +176,14 @@ func (s *AfricasTalkingSender) baseURLAndKey() (string, string) {
 // Send sends a message via the AfricasTalking API.
 func (s *AfricasTalkingSender) Send(ctx context.Context, msg *domain.Message) *domain.SendResult {
 	start := time.Now()
+
+	if remaining := s.balanceCooldownRemaining(); remaining > 0 {
+		s.log.WithFields(map[string]interface{}{
+			"correlator":    msg.Correlator,
+			"cooldown_left": remaining.String(),
+		}).Warn("AfricasTalking balance depleted, skipping send until cooldown expires")
+		return domain.NewPermanentResult(msg, domain.ErrInsufficientBalance, time.Since(start))
+	}
 
 	if s.circuitBreaker != nil && s.circuitBreaker.IsOpen() {
 		s.log.WithField("network", domain.NetworkINTNL).Warn("Circuit breaker is open")
@@ -208,7 +300,8 @@ func (s *AfricasTalkingSender) executeSend(ctx context.Context, msg *domain.Mess
 	}
 
 	first := recipients[0]
-	if first.Status == "Success" || first.StatusCode == 101 {
+	if first.Status == "Success" || first.StatusCode == atStatusSent ||
+		first.StatusCode == atStatusProcessed || first.StatusCode == atStatusQueued {
 		s.log.WithFields(map[string]interface{}{
 			"correlator":  msg.Correlator,
 			"message_id":  first.MessageID,
@@ -229,11 +322,18 @@ func (s *AfricasTalkingSender) executeSend(ctx context.Context, msg *domain.Mess
 		"response":    responseStr,
 	}).Error("Message rejected by AfricasTalking")
 
-	result := domain.NewPermanentResult(
-		msg,
-		fmt.Errorf("%w: status=%s statusCode=%d", domain.ErrMNORejected, first.Status, first.StatusCode),
-		latency,
-	)
+	if first.StatusCode == atStatusInsufficientBalance {
+		s.tripBalanceCooldown()
+	}
+
+	rejectionErr := fmt.Errorf("%w: status=%s statusCode=%d", domain.ErrMNORejected, first.Status, first.StatusCode)
+
+	var result *domain.SendResult
+	if classifyATRejection(first.StatusCode) == domain.ResultRetryable {
+		result = domain.NewRetryableResult(msg, rejectionErr, latency)
+	} else {
+		result = domain.NewPermanentResult(msg, rejectionErr, latency)
+	}
 	result.NetworkCode = fmt.Sprintf("%d", first.StatusCode)
 	return result
 }
