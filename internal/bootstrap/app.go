@@ -262,11 +262,13 @@ func New(cfg *config.Config) (*App, error) {
 		Logger:     app.Logger,
 	})
 	app.AfricasTalkingProcessor = service.NewAfricasTalkingProcessor(&service.AfricasTalkingProcessorConfig{
-		Sender:      app.AfricasTalkingSender,
-		Reporter:    app.AfricasTalkingReporter,
-		RateLimiter: app.RateLimiter,
-		Metrics:     app.Metrics,
-		Logger:      app.Logger,
+		Sender:        app.AfricasTalkingSender,
+		Reporter:      app.AfricasTalkingReporter,
+		RateLimiter:   app.RateLimiter,
+		Metrics:       app.Metrics,
+		Publisher:     app.Publisher,
+		SaveToDBQueue: cfg.Queues.SaveToDBQueue,
+		Logger:        app.Logger,
 	})
 	app.Logger.Info("AfricasTalking pipeline initialized")
 

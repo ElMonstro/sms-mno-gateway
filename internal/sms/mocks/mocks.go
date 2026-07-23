@@ -198,6 +198,7 @@ type MockQueuePublisher struct {
 	connected        bool
 	PublishedItems   []*PublishedItem
 	PublishFunc      func(ctx context.Context, result *domain.SendResult) error
+	PublishErr       error
 	GatewayQueueName string
 }
 
@@ -218,6 +219,9 @@ func NewMockQueuePublisher() *MockQueuePublisher {
 func (p *MockQueuePublisher) Publish(ctx context.Context, queueName string, msg *domain.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.PublishErr != nil {
+		return p.PublishErr
+	}
 	p.PublishedItems = append(p.PublishedItems, &PublishedItem{
 		Message:   msg,
 		QueueName: queueName,

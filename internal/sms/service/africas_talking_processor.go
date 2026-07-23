@@ -10,35 +10,44 @@ import (
 )
 
 // AfricasTalkingProcessor processes deliveries from AFRICAS_TALKING_SMS_QUEUE.
-// Unlike Processor, it does not publish results to internal RabbitMQ queues —
+// Unlike Processor, it does not route results through Publisher.PublishResult —
 // it calls the AfricasTalking API directly, then reports the outcome to the PHP
 // API over HTTP, and acks the delivery only once that report call succeeds.
+// Successful and permanently-failed results are also published to SAVE_TO_DB,
+// mirroring how Processor/Publisher.PublishResult handles SDP/SMPP; retryable
+// results are not, since this processor has no delay/retry-queue path of its own.
 // The queue is documented to carry exactly one message per delivery.
 type AfricasTalkingProcessor struct {
-	sender      ports.MNOSender
-	reporter    ports.ResultReporter
-	rateLimiter *ratelimit.Limiter
-	metrics     ports.Metrics
-	log         logger.Logger
+	sender        ports.MNOSender
+	reporter      ports.ResultReporter
+	rateLimiter   *ratelimit.Limiter
+	metrics       ports.Metrics
+	publisher     ports.QueuePublisher
+	saveToDBQueue string
+	log           logger.Logger
 }
 
 // AfricasTalkingProcessorConfig holds configuration for the processor.
 type AfricasTalkingProcessorConfig struct {
-	Sender      ports.MNOSender
-	Reporter    ports.ResultReporter
-	RateLimiter *ratelimit.Limiter
-	Metrics     ports.Metrics
-	Logger      logger.Logger
+	Sender        ports.MNOSender
+	Reporter      ports.ResultReporter
+	RateLimiter   *ratelimit.Limiter
+	Metrics       ports.Metrics
+	Publisher     ports.QueuePublisher
+	SaveToDBQueue string
+	Logger        logger.Logger
 }
 
 // NewAfricasTalkingProcessor creates a new AfricasTalking processor.
 func NewAfricasTalkingProcessor(cfg *AfricasTalkingProcessorConfig) *AfricasTalkingProcessor {
 	return &AfricasTalkingProcessor{
-		sender:      cfg.Sender,
-		reporter:    cfg.Reporter,
-		rateLimiter: cfg.RateLimiter,
-		metrics:     cfg.Metrics,
-		log:         cfg.Logger,
+		sender:        cfg.Sender,
+		reporter:      cfg.Reporter,
+		rateLimiter:   cfg.RateLimiter,
+		metrics:       cfg.Metrics,
+		publisher:     cfg.Publisher,
+		saveToDBQueue: cfg.SaveToDBQueue,
+		log:           cfg.Logger,
 	}
 }
 
@@ -131,6 +140,21 @@ func (p *AfricasTalkingProcessor) processMessage(ctx context.Context, msg *domai
 			"error":      err.Error(),
 		}).Error("Failed to report AfricasTalking send result, requeueing")
 		return outcomeNackRequeue
+	}
+
+	// Save successful and permanently-failed results to SAVE_TO_DB, matching
+	// Publisher.PublishResult's behavior for SDP/SMPP. Retryable results aren't
+	// saved here — this processor has no delay/retry-queue path of its own, so a
+	// retryable send is already terminal by the time it reaches this point.
+	if p.publisher != nil && (result.IsSuccess() || result.IsPermanent()) {
+		if err := p.publisher.Publish(ctx, p.saveToDBQueue, result.Message); err != nil {
+			p.log.WithFields(map[string]interface{}{
+				"correlator": msg.Correlator,
+				"outbox_id":  msg.OutboxID,
+				"error":      err.Error(),
+			}).Error("Failed to publish AfricasTalking result to SAVE_TO_DB, requeueing")
+			return outcomeNackRequeue
+		}
 	}
 
 	return outcomeAck
