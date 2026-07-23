@@ -67,7 +67,7 @@ func (r *AfricasTalkingReporter) Report(ctx context.Context, result *domain.Send
 	}
 
 	payload := sendResultPayload{
-		OutboxID:    result.Message.OutboxID,
+		OutboxID:    int64(result.Message.OutboxID),
 		Success:     success,
 		Status:      status,
 		NetworkCode: result.NetworkCode,
