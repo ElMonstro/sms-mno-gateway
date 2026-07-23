@@ -227,7 +227,7 @@ env:
   - name: AFRICAS_TALKING_MODE
     value: production
   - name: AFRICAS_TALKING_SEND_RESULT_URL
-    value: https://api.v2.emalify.com/api/internal/africas-talking/send-result
+    value: https://gateway-dlr-handler.emalify.com/save/international
 
 secrets:
   - SDP_USERNAME
