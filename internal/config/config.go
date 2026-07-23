@@ -190,12 +190,16 @@ type AfricasTalkingConfig struct {
 	// after seeing an InsufficientBalance response from the API.
 	BalanceCooldown time.Duration
 
-	// MaxReportRetries caps how many times AfricasTalkingProcessor will requeue a
-	// message after a failed callback report to the PHP API, before dead-lettering
-	// it. Without a cap, a persistently failing report endpoint retries forever.
+	// MaxReportRetries caps how many times AfricasTalkingProcessor retries a
+	// failed downstream step (the callback report to the PHP API, or the
+	// SAVE_TO_DB publish) in-process, before dead-lettering the message. The
+	// retry never re-invokes the AfricasTalking send itself — only whichever
+	// downstream step actually failed. Without a cap, a persistently failing
+	// step retries forever.
 	MaxReportRetries int
 	// ReportRetryBaseDelay/ReportRetryMaxDelay control the exponential backoff
-	// applied between report-retry attempts (base * 2^(attempt-1), capped at max).
+	// applied between in-process retry attempts (base * 2^(attempt-1), capped
+	// at max).
 	ReportRetryBaseDelay time.Duration
 	ReportRetryMaxDelay  time.Duration
 }
