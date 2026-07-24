@@ -62,6 +62,39 @@ func TestAfricasTalkingReporter_Report_Success(t *testing.T) {
 	}
 }
 
+// TestAfricasTalkingReporter_Report_IncludesMSISDNAndSender guards against a
+// gap gateway-dlr-handler flagged: our payload previously had no phone number
+// or sender at all, so its handler had nothing to populate those fields with
+// unless it already had the data from its own outbox row.
+func TestAfricasTalkingReporter_Report_IncludesMSISDNAndSender(t *testing.T) {
+	var gotPayload sendResultPayload
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	reporter := newTestReporter(t, server.URL, "shared-secret")
+
+	msg := &domain.Message{Correlator: "123", OutboxID: 456, MSISDN: "260761567057", Sender: "Betika"}
+	result := domain.NewSuccessResult(msg, "ok", time.Millisecond)
+	result.ExternalMessageID = "ATXid_1"
+	result.NetworkCode = "101"
+
+	if err := reporter.Report(context.Background(), result); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if gotPayload.MSISDN != "260761567057" {
+		t.Errorf("expected msisdn 260761567057, got %q", gotPayload.MSISDN)
+	}
+	if gotPayload.Sender != "Betika" {
+		t.Errorf("expected sender Betika, got %q", gotPayload.Sender)
+	}
+}
+
 // TestAfricasTalkingReporter_Report_SerializesMessageIDAsID guards against a
 // regression to the "messageId" key: gateway-dlr-handler's /save/international
 // endpoint requires the field to be named "id" (matching AfricasTalking's own
