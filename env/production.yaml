@@ -86,8 +86,10 @@ env:
   - name: SAFARICOM_SMPP_DLR_URL_API_V2
     value: https://gateway-dlr-handler.emalify.com/save
 
+  # - name: AIRTEL_SMPP_URL
+  #   value: http://105.21.40.34:1404/cgi-bin/sendsms
   - name: AIRTEL_SMPP_URL
-    value: http://105.21.40.34:1404/cgi-bin/sendsms
+    value: http://34.77.25.98:14013/cgi-bin/sendsms
   - name: AIRTEL_SMPP_SMSC
     value: AIRTEL_TRANS
   - name: AIRTEL_SMPP_DLR_URL
