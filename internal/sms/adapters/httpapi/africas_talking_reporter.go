@@ -55,6 +55,8 @@ type sendResultPayload struct {
 	MessageID   string `json:"id,omitempty"`
 	Status      string `json:"status,omitempty"`
 	NetworkCode string `json:"networkCode,omitempty"`
+	MSISDN      string `json:"msisdn,omitempty"`
+	Sender      string `json:"sender,omitempty"`
 }
 
 // Report POSTs the outcome of result to the PHP API. A non-nil error means the
@@ -75,6 +77,8 @@ func (r *AfricasTalkingReporter) Report(ctx context.Context, result *domain.Send
 		Success:     success,
 		Status:      status,
 		NetworkCode: result.NetworkCode,
+		MSISDN:      result.Message.MSISDN,
+		Sender:      result.Message.Sender,
 	}
 	if success {
 		payload.MessageID = result.ExternalMessageID
