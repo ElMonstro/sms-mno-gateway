@@ -3,6 +3,16 @@ type: go
 migrations: false
 health_check_path: "/health"
 
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "100m"
+    ephemeral-storage: 1Gi
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+    ephemeral-storage: 1Gi
+
 env:
   - name: APP_ENV
     value: development

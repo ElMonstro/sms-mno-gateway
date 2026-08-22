@@ -3,6 +3,16 @@ type: go
 
 migrations: false
 
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "100m"
+    ephemeral-storage: 1Gi
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+    ephemeral-storage: 1Gi
+
 #check allowed ips for whitelisting...or should it be public?
 allowed_networks:
   public-ipv4:
